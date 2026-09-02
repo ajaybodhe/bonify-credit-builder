@@ -1,0 +1,156 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Daily, for the contract tests only — early warning if the upstream shifts.
+    - cron: "0 6 * * *"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: 24
+
+jobs:
+  verify:
+    name: typecheck / lint / format / unit (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      # Both ends of the supported range in package.json "engines": 22 is the
+      # local dev baseline (.nvmrc), 24 is the current LTS.
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci
+
+      # Run all four even if an earlier one fails — one CI run should report
+      # every problem, not just the first.
+      - run: npm run typecheck
+      - run: npm run lint
+        if: "!cancelled()"
+      - run: npm run format:check
+        if: "!cancelled()"
+      - run: npm run test:coverage
+        if: "!cancelled()"
+
+      - uses: actions/upload-artifact@v4
+        if: "!cancelled()"
+        with:
+          name: coverage-node-${{ matrix.node }}
+          path: coverage/
+          retention-days: 7
+
+  integration:
+    name: integration (postgres)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: credit
+          POSTGRES_PASSWORD: credit
+          POSTGRES_DB: credit_builder_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U credit"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://credit:credit@localhost:5433/credit_builder_test
+      # Integration tests hit a local mock, never the real upstream.
+      BANKING_API_BASE_URL: http://127.0.0.1:9099
+      BANKING_API_KEY: test-key
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run db:migrate
+      - run: npm run test:integration
+      - run: npm run test:e2e
+        if: "!cancelled()"
+
+  # Contract tests hit the LIVE Banking API. They are deliberately NOT part of
+  # the PR gate: a red build caused by someone else's outage teaches people to
+  # ignore red builds. Scheduled + manual, alerting on failure.
+  contract:
+    name: contract (live upstream)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BANKING_API_BASE_URL: ${{ vars.BANKING_API_BASE_URL }}
+      BANKING_API_KEY: ${{ secrets.BANKING_API_KEY }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run test:contract
+
+  image:
+    name: docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      # The Dockerfile is only a claim until something builds it. This job is
+      # what makes "it containerises" a fact rather than a file in the repo.
+      - run: docker build -t credit-builder:ci .
+      # And the runtime stage must be able to migrate: `db:migrate` needs tsx
+      # and src/, neither of which survives `npm ci --omit=dev`, so the image
+      # ships the compiled `db:migrate:prod` instead.
+      # The whole stack, the way the README tells a reviewer to start it.
+      - name: docker compose brings the service up and it answers
+        run: |
+          printf 'BANKING_API_BASE_URL=http://unused.invalid\nBANKING_API_KEY=ci\n' > .env
+          docker compose up -d --build
+          for i in $(seq 1 60); do
+            curl -fsS http://localhost:3000/health && break || sleep 2
+          done
+          curl -fsS http://localhost:3000/health
+          docker compose down -v
+
+      - name: the runtime image can run migrations
+        run: |
+          docker run --rm --entrypoint node credit-builder:ci \
+            -e "import('./dist/db/migrate.js').catch(e => {
+                  if (String(e).includes('DATABASE_URL')) process.exit(0);
+                  console.error(e); process.exit(1);
+                })"
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Smoke-test the built artifact
+        run: node -e "import('./dist/app.js').then(m => { if (typeof m.buildApp !== 'function') throw new Error('buildApp missing from build output'); })"

@@ -1,0 +1,10 @@
+{
+  "recommendations": [
+    "dbaeumer.vscode-eslint",
+    "esbenp.prettier-vscode",
+    "editorconfig.editorconfig",
+    "vitest.explorer",
+    "bierner.markdown-mermaid",
+    "humao.rest-client"
+  ]
+}

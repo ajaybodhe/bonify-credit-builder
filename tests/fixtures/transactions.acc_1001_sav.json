@@ -1,0 +1,82 @@
+{
+  "transactions": [
+    {
+      "id": "txn_00947",
+      "account_id": "acc_1001_sav",
+      "amount": 300,
+      "currency": "EUR",
+      "date": "2026-05-28",
+      "description": "SAVINGS TRANSFER",
+      "merchant_category_code": "6540",
+      "merchant_name": "Internal Transfer",
+      "type": "credit"
+    },
+    {
+      "id": "txn_00832",
+      "account_id": "acc_1001_sav",
+      "amount": 300,
+      "currency": "EUR",
+      "date": "2026-04-28",
+      "description": "SAVINGS TRANSFER",
+      "merchant_category_code": "6540",
+      "merchant_name": "Internal Transfer",
+      "type": "credit"
+    },
+    {
+      "id": "txn_00488",
+      "account_id": "acc_1001_sav",
+      "amount": 300,
+      "currency": "EUR",
+      "date": "2026-01-28",
+      "description": "SAVINGS TRANSFER",
+      "merchant_category_code": "6540",
+      "merchant_name": "Internal Transfer",
+      "type": "credit"
+    },
+    {
+      "id": "txn_00029",
+      "account_id": "acc_1001_sav",
+      "amount": 300,
+      "currency": "EUR",
+      "date": "2025-09-28",
+      "description": "SAVINGS TRANSFER",
+      "merchant_category_code": "6540",
+      "merchant_name": "Internal Transfer",
+      "type": "credit"
+    },
+    {
+      "id": "txn_00257",
+      "account_id": "acc_1001_sav",
+      "amount": 300,
+      "currency": "EUR",
+      "date": "2025-11-28",
+      "description": "SAVINGS TRANSFER",
+      "merchant_category_code": "6540",
+      "merchant_name": "Internal Transfer",
+      "type": "credit"
+    },
+    {
+      "id": "txn_00602",
+      "account_id": "acc_1001_sav",
+      "amount": 300,
+      "currency": "EUR",
+      "date": "2026-02-28",
+      "description": "SAVINGS TRANSFER",
+      "merchant_category_code": "6540",
+      "merchant_name": "Internal Transfer",
+      "type": "credit"
+    },
+    {
+      "id": "txn_00717",
+      "account_id": "acc_1001_sav",
+      "amount": 300,
+      "currency": "EUR",
+      "date": "2026-03-28",
+      "description": "SAVINGS TRANSFER",
+      "merchant_category_code": "6540",
+      "merchant_name": "Internal Transfer",
+      "type": "credit"
+    }
+  ],
+  "next_cursor": null
+}

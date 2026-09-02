@@ -1,0 +1,9 @@
+# Fast, local, and scoped to what you actually staged: eslint --fix then
+# prettier --write. Nothing here should make you think about reaching for
+# --no-verify, because that flag disables every hook, on the one commit where
+# one of them mattered.
+#
+# Tests are deliberately absent. They run as the PR gate, where they get a
+# clean checkout, both supported Node versions and a real Postgres — none of
+# which a commit hook has. See docs/architecture-design.md §5.
+npx lint-staged

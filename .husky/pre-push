@@ -1,0 +1,5 @@
+# Typecheck only. Tests belong in CI, where all four tiers run against real
+# services — and to the developer, on demand. A hook that runs them on every
+# push trains people to reach for --no-verify, which disables the hook for the
+# one push where it would have mattered.
+npm run typecheck

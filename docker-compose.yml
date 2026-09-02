@@ -1,0 +1,64 @@
+# The whole system: database, migrations, service.
+#
+#   docker compose up --build      → http://localhost:3000
+#
+# Port 5433 on the host, deliberately: it keeps this out of the way of a
+# system Postgres already listening on 5432.
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: credit-builder-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: credit
+      POSTGRES_PASSWORD: credit
+      POSTGRES_DB: credit_builder
+      # Deterministic collation so ORDER BY is stable across machines.
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U credit -d credit_builder"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  # Runs once and exits. The app waits for it to succeed, so the service never
+  # starts against a schema that has not been applied.
+  migrate:
+    build: .
+    container_name: credit-builder-migrate
+    command: ["node", "dist/db/migrate.js"]
+    environment:
+      DATABASE_URL: postgres://credit:credit@postgres:5432/credit_builder
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    build: .
+    container_name: credit-builder-app
+    # Banking API credentials come from .env; everything else is fixed here.
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+      DATABASE_URL: postgres://credit:credit@postgres:5432/credit_builder
+      # A container behind no proxy must not believe X-Forwarded-For.
+      TRUST_PROXY: "false"
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  pgdata:

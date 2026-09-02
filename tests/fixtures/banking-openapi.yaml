@@ -1,0 +1,238 @@
+openapi: 3.0.3
+info:
+  title: Mock Banking API
+  description: |
+    Simulated external banking provider for interview assignments.
+
+    This API provides bank accounts, transaction history, and merchant category data
+    for multiple test users with different financial profiles.
+
+    ## Authentication
+    All endpoints (except `/health` and `/`) require a Bearer token in the Authorization header.
+    Any non-empty token is accepted.
+
+    ## Available Users
+    Use the discovery endpoint (`GET /`) to see available user IDs.
+
+    ## Data Range
+    Transaction data covers **September 2025 through June 2027** (~22 months).
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:4010
+    description: Local development
+
+security:
+  - BearerAuth: []
+
+paths:
+  /:
+    get:
+      summary: API discovery
+      description: Returns available users, endpoints, and API metadata. No authentication required.
+      security: []
+      responses:
+        "200":
+          description: API metadata
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /health:
+    get:
+      summary: Health check
+      security: []
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /users/{userId}/accounts:
+    get:
+      summary: List user accounts
+      description: Returns all bank accounts for a given user.
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: user_1001
+      responses:
+        "200":
+          description: User accounts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accounts:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Account"
+              example:
+                accounts:
+                  - id: acc_1001_chk
+                    user_id: user_1001
+                    type: checking
+                    currency: EUR
+                    balance: 2450.00
+                    name: Main Checking
+        "404":
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /accounts/{accountId}/transactions:
+    get:
+      summary: List account transactions (paginated)
+      description: |
+        Returns transactions for a specific account within a date range.
+        Uses cursor-based pagination with a page size of 15.
+
+        **Important:** Transactions may arrive out of order across pages.
+        Do NOT assume any ordering.
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: acc_1001_chk
+        - name: from
+          in: query
+          required: true
+          description: Start date (inclusive, YYYY-MM-DD)
+          schema:
+            type: string
+            format: date
+          example: "2025-09-01"
+        - name: to
+          in: query
+          required: true
+          description: End date (inclusive, YYYY-MM-DD)
+          schema:
+            type: string
+            format: date
+          example: "2026-02-20"
+        - name: cursor
+          in: query
+          required: false
+          description: Pagination cursor from previous response's `next_cursor`
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Paginated transactions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transactions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Transaction"
+                  next_cursor:
+                    type: string
+                    nullable: true
+                    description: Base64-encoded cursor for next page. Null if no more pages.
+        "400":
+          description: Missing required query parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /dictionaries/merchant-categories:
+    get:
+      summary: Merchant categories dictionary
+      description: Returns the full list of merchant category codes and their groupings.
+      responses:
+        "200":
+          description: Category dictionary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  categories:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MerchantCategory"
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+
+  schemas:
+    Account:
+      type: object
+      properties:
+        id:
+          type: string
+        user_id:
+          type: string
+        type:
+          type: string
+          enum: [checking, savings]
+        currency:
+          type: string
+        balance:
+          type: number
+        name:
+          type: string
+
+    Transaction:
+      type: object
+      properties:
+        id:
+          type: string
+        account_id:
+          type: string
+        amount:
+          type: number
+          description: Negative = debit, positive = credit
+        currency:
+          type: string
+        date:
+          type: string
+          format: date
+        description:
+          type: string
+        merchant_category_code:
+          type: string
+        merchant_name:
+          type: string
+        type:
+          type: string
+          enum: [debit, credit]
+
+    MerchantCategory:
+      type: object
+      properties:
+        code:
+          type: string
+        name:
+          type: string
+        group:
+          type: string
+          enum: [essential, discretionary, high_risk, savings, cash, income, fees]
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string

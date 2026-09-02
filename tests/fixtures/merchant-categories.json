@@ -1,0 +1,21 @@
+{
+  "categories": [
+    { "code": "6513", "name": "Rent Payments", "group": "essential" },
+    { "code": "4900", "name": "Utilities", "group": "essential" },
+    { "code": "5411", "name": "Grocery Stores", "group": "essential" },
+    { "code": "6300", "name": "Insurance", "group": "essential" },
+    { "code": "8011", "name": "Healthcare", "group": "essential" },
+    { "code": "4111", "name": "Public Transport", "group": "essential" },
+    { "code": "9001", "name": "Payroll / Salary", "group": "income" },
+    { "code": "9002", "name": "Freelance Income", "group": "income" },
+    { "code": "6540", "name": "Savings Transfer", "group": "savings" },
+    { "code": "5812", "name": "Restaurants", "group": "discretionary" },
+    { "code": "5691", "name": "Clothing Stores", "group": "discretionary" },
+    { "code": "7832", "name": "Cinema / Entertainment", "group": "discretionary" },
+    { "code": "5310", "name": "Discount Stores", "group": "discretionary" },
+    { "code": "7995", "name": "Gambling", "group": "high_risk" },
+    { "code": "6051", "name": "Crypto Exchanges", "group": "high_risk" },
+    { "code": "6012", "name": "Late Fees / Penalties", "group": "fees" },
+    { "code": "6011", "name": "ATM Withdrawals", "group": "cash" }
+  ]
+}

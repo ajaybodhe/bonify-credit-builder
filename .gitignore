@@ -1,0 +1,88 @@
+# ---- Dependencies ----
+node_modules/
+.pnp/
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/releases
+!.yarn/plugins
+!.yarn/versions
+
+# ---- Build output ----
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# ---- Test & coverage ----
+coverage/
+.nyc_output/
+test-results/
+*.lcov
+
+# ---- Environment & secrets ----
+# .env.example IS committed; every other .env variant carries the Banking API key.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# ---- Logs ----
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# ---- Caches ----
+.cache/
+.npm/
+.eslintcache
+.prettiercache
+.vitest/
+.tsc-cache/
+node_repl_history
+
+# ---- Local data ----
+# Postgres volume when docker compose is run with a bind mount.
+.pgdata/
+*.sqlite
+*.sqlite3
+*.db
+
+# ---- Editors & OS ----
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.swp
+*.swo
+.idea/
+*.iml
+
+# VS Code: settings.json and extensions.json ARE committed so the repo carries
+# its own formatter/linter wiring. Everything else is personal.
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
+
+# ---- Claude Code ----
+# .claude/settings.json and .claude/skills/ ARE committed — they are project
+# configuration. Personal overrides and local state are not.
+.claude/settings.local.json
+.claude/local/
+CLAUDE.local.md
+
+# ---- Scratch ----
+scratch/
+tmp/
+*.local
