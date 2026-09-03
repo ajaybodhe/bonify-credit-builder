@@ -235,8 +235,9 @@ month-boundary bugs.
 resolved by comparing `content_hash`, on a difference the prior row
 is archived, `revision` increments, and the row updates. The `status` column
 carries `amended` and `reversed` and scoring filters on `active`, but **nothing
-writes a non-`active` status today** — this provider exposes no reversal signal,
-so the mechanism is in place and unpopulated. Banks amend routinely — authorisations
+writes a non-`active` status today**. Reversals and deletions are not handled
+explicitly, because the provider gives us no way to recognise either: there is no
+reversal flag, no reference back to an original, and no deletion signal. Banks amend routinely — authorisations
 settle at a different amount, categories are corrected, payments reversed,
 booking dates shift across a month boundary — and each changes a score while
 raising no error.
@@ -369,8 +370,7 @@ a real defect, and retrying turns a fast error into a slow one.
 
 **Drift.** The Banking API exposes no total or `has_more`, so count-based
 reconciliation is unavailable. Drift is detected by the full re-read diffing
-content hashes. Deletions are detectable in principle — present locally, absent
-from a completed re-walk — but not implemented.
+content hashes.
 
 ### 4.6 Failure modes and retry
 

@@ -319,6 +319,11 @@ export class SyncService {
         .onConflictDoUpdate({
           target: schema.transactions.id,
           set: {
+            // `accountId` and `currency` are in the digest, so they must be
+            // writable here too — detecting a change we then refuse to apply
+            // would leave the row permanently disagreeing with its own hash.
+            accountId: sql`excluded.account_id`,
+            currency: sql`excluded.currency`,
             amount: sql`excluded.amount`,
             bookedAt: sql`excluded.booked_at`,
             category: sql`excluded.category`,
@@ -347,16 +352,24 @@ export class SyncService {
 }
 
 /**
- * Digest of the fields a score depends on. Excludes `description`: upstream
- * enriches descriptors without changing meaning, and treating that as an
- * amendment would bury real changes in noise.
+ * Digest of the fields a score depends on. Must cover the same fields as
+ * `hashTransactionSet` in reconstruct.ts: a field that can change the score but
+ * is missing here is an amendment we never notice. Excludes `description`:
+ * upstream enriches descriptors without changing meaning, and treating that as
+ * an amendment would bury real changes in noise.
  */
 function contentHashOf(t: BankingTransaction): string {
   return createHash('sha256')
     .update(
-      [t.id, t.date, t.amount.toFixed(2), t.currency, t.merchant_category_code ?? '', t.type].join(
-        '|',
-      ),
+      [
+        t.id,
+        t.account_id,
+        t.date,
+        t.amount.toFixed(2),
+        t.currency,
+        t.merchant_category_code ?? '',
+        t.type,
+      ].join('|'),
     )
     .digest('hex');
 }

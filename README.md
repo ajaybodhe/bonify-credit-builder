@@ -224,9 +224,10 @@ builds.
 - **No account tombstoning.** An account that disappears upstream keeps
   scoring, and does so silently rather than loudly, which is the part that
   matters.
-- **Reversals are not implemented.** The `status` column carries `amended` and
-  `reversed` and scoring filters on `active`, but nothing writes a non-`active`
-  status — this provider exposes no reversal signal.
+- **Reversals and deletions are not implemented.** A change to a transaction is
+  handled: the old row is archived and replaced by the new one. Reversals and
+  deletions are not, because the provider exposes no way to recognise them — no
+  reversal flag, no link back to an original, no deletion signal.
 
 ### Known inaccuracies in the model
 

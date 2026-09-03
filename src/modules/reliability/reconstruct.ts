@@ -173,10 +173,18 @@ export function hashTransactionSet(transactions: readonly HistoricalTransaction[
   const canonical = [...transactions]
     .sort((a, b) => a.id.localeCompare(b.id))
     .map((t) =>
-      // `account_id`: an amendment moving a row between own accounts changes the score.
-      [t.id, t.account_id, t.booked_at, t.amount, t.category ?? '', t.is_credit ? 'C' : 'D'].join(
-        '|',
-      ),
+      // Same fields as `contentHashOf` in sync/service.ts, deliberately: one
+      // decides what counts as an amendment, the other what counts as the same
+      // scored set, and a field in only one of them is a silent gap.
+      [
+        t.id,
+        t.account_id,
+        t.booked_at,
+        t.amount,
+        t.currency,
+        t.category ?? '',
+        t.is_credit ? 'C' : 'D',
+      ].join('|'),
     )
     .join('\n');
   return createHash('sha256').update(canonical).digest('hex');

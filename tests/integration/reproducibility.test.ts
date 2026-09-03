@@ -336,12 +336,6 @@ describe('an account connected after the score was served', () => {
 });
 
 /**
- * `input_hash` is also the snapshot dedupe key, so anything the model reads
- * must be in it. `account_id` decides transfer classification and which balance
- * series a row belongs to — an amendment moving a transaction between the
- * user's own accounts changes the score.
- */
-/**
  * The gap every other test in this file steps over.
  *
  * Those compare a rebuild against another rebuild, so both sides read the same
@@ -357,16 +351,19 @@ describe('a rebuild reproduces the LIVE fingerprint, not merely another rebuild'
 
     const client = await pool.connect();
     try {
-      // Exactly what the scoring path does: typed columns.
+      // Typed columns, as the scoring path reads them. Must select every field
+      // `hashTransactionSet` digests, or this compares a live row against a
+      // rebuild of a different shape and fails for the wrong reason.
       const live = await client.query<{
         id: string;
         account_id: string;
         booked_at: string;
         amount: string;
+        currency: string;
         category: string | null;
         is_credit: boolean;
       }>(
-        `SELECT id, account_id, booked_at::text, amount, category, is_credit
+        `SELECT id, account_id, booked_at::text, amount, currency, category, is_credit
            FROM transactions WHERE id = 't_money'`,
       );
       const liveHash = hashTransactionSet(live.rows as never);

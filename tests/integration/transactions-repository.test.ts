@@ -23,6 +23,7 @@ afterAll(() => pool.end());
 const db: Database = drizzle(pool, { schema });
 const USER = 'user_repo';
 const ACCOUNT = 'acc_repo';
+const SECOND_ACCOUNT = 'acc_repo_2';
 
 const silentLog = { debug: () => undefined, warn: () => undefined, error: () => undefined };
 const noCategories = {
@@ -77,8 +78,9 @@ const stored = async (id = 'txn_1') =>
       revision: number;
       content_hash: string;
       status: string;
+      account_id: string;
     }>(
-      `SELECT amount, category, description, revision, content_hash, status
+      `SELECT amount, category, description, revision, content_hash, status, account_id
          FROM transactions WHERE id = $1`,
       [id],
     )
@@ -114,6 +116,21 @@ describe('dedupe by content hash', () => {
     expect(amended.amended_transactions).toBe(1);
     const row = await stored();
     expect(row?.amount).toBe('-99.99');
+    expect(row?.revision).toBe(2);
+  });
+
+  /**
+   * `account_id` decides transfer classification and which balance series the
+   * row belongs to, so a move changes the score. It was missing from the digest,
+   * which made such a move invisible: same hash, no archive, no update.
+   */
+  it('a changed account_id bumps revision and moves the row', async () => {
+    await sync([[txn()]], [ACCOUNT, SECOND_ACCOUNT]);
+    const amended = await sync([[txn({ account_id: SECOND_ACCOUNT })]], [ACCOUNT, SECOND_ACCOUNT]);
+
+    expect(amended.amended_transactions).toBe(1);
+    const row = await stored();
+    expect(row?.account_id).toBe(SECOND_ACCOUNT);
     expect(row?.revision).toBe(2);
   });
 
@@ -177,6 +194,12 @@ describe('transaction_revisions', () => {
     for (const key of ['id', 'account_id', 'user_id', 'booked_at', 'category', 'is_credit']) {
       expect(previous).toHaveProperty(key);
     }
+  });
+
+  it('the archived revision records the account the row was on before', async () => {
+    await sync([[txn()]], [ACCOUNT, SECOND_ACCOUNT]);
+    await sync([[txn({ account_id: SECOND_ACCOUNT })]], [ACCOUNT, SECOND_ACCOUNT]);
+    expect((await revisions())[0]?.previous['account_id']).toBe(ACCOUNT);
   });
 
   it('records one revision per amendment, and none for a duplicate', async () => {
