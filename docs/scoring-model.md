@@ -221,6 +221,40 @@ movement makes the series worse rather than better.
 
 ---
 
+## Currency — EUR only, and foreign rows are dropped
+
+The exercise is single-currency and FX conversion is out of scope, so the service
+does none. What it must not do is combine currencies as though the question did
+not arise: upstream types `currency` as a bare string with no enum, so a
+foreign-currency row is contractually possible even though none has been
+observed.
+
+Summing one in is not a small error. A single USD credit added to an otherwise
+EUR history moves `income_coverage_ratio` from 1.11 to 2.04 — the headline index
+barely twitches, because component B saturates, so the corruption hides in a
+metric while the score looks stable. And the response labels every score `"EUR"`.
+
+**The policy: drop at ingest, count, and carry on.**
+
+- A **transaction** in another currency is not stored. The rest of its page is,
+  so an otherwise-EUR account keeps its history and stays scoreable.
+- An **account** in another currency is dropped whole and never walked —
+  including its balance, which would otherwise anchor the negative-balance
+  reconstruction of a EUR series.
+- Every drop increments `sync.non_eur_skipped{kind,currency}` and is named in the
+  sync response `warnings`, so the caller sees what was discarded rather than
+  inferring it from a total that does not add up.
+- Nothing is converted, and nothing is combined. A dropped row is absent from the
+  score, not approximated in it.
+
+The consequence to know about: an account that flips to a foreign currency after
+having been synced in EUR stops being walked, so it falls out of coverage and
+scoring **refuses** for that user until it is resolved. That is deliberate —
+refusing is the loud failure; scoring the remainder as though the account were
+complete would be the quiet one.
+
+---
+
 ## `good_months` — a definition nobody gave
 
 The response contract carries `good_months` without anywhere defining what a good

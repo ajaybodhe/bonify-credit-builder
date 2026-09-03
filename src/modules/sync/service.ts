@@ -9,6 +9,7 @@ import type { BankingTransaction } from '../../banking/types.js';
 import type { CategoryResolver } from '../reliability/categories.js';
 import { SYNC_DEADLINE_MS, withSyncRun } from './claim.js';
 import type { Logger } from '../../lib/logger.js';
+import { isSupportedCurrency } from '../../lib/currency.js';
 
 function isUniqueViolation(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === '23505';
@@ -23,6 +24,7 @@ function classifyFailure(err: unknown): string {
 }
 import {
   categoryRefreshFailures,
+  nonEurSkipped,
   syncAccountFailures,
   syncConflictsTotal,
   syncDuration,
@@ -73,33 +75,52 @@ export class SyncService {
 
           try {
             const range = await this.banking.getDataRange();
-            const accounts = await this.banking.listAccounts(userId, abort.signal);
+            const published = await this.banking.listAccounts(userId, abort.signal);
 
-            await this.db
-              .insert(schema.accounts)
-              .values(
-                accounts.map((a) => ({
-                  id: a.id,
-                  userId,
-                  name: a.name ?? null,
-                  type: a.type,
-                  currency: a.currency,
-                  currentBalance: a.balance.toFixed(2),
-                  lastSyncedAt: new Date(),
-                })),
-              )
-              .onConflictDoUpdate({
-                target: schema.accounts.id,
-                set: {
-                  name: sql`excluded.name`,
-                  type: sql`excluded.type`,
-                  currency: sql`excluded.currency`,
-                  currentBalance: sql`excluded.current_balance`,
-                  lastSyncedAt: sql`excluded.last_synced_at`,
-                },
-              });
+            // Single-currency by design: a foreign-currency account is dropped
+            // whole, balance included, since that balance anchors the
+            // negative-balance reconstruction. See lib/currency.ts.
+            const accounts = published.filter((a) => isSupportedCurrency(a.currency));
+            const skippedAccounts = published.filter((a) => !isSupportedCurrency(a.currency));
+            for (const a of skippedAccounts) {
+              nonEurSkipped.add(1, { kind: 'account', currency: a.currency });
+            }
+            if (skippedAccounts.length > 0) {
+              this.log.warn(
+                { userId, syncRunId: run.runId, accounts: skippedAccounts.length },
+                'skipped non-EUR account(s); this service does no FX conversion',
+              );
+            }
 
-            const totals = { fresh: 0, duplicate: 0, amended: 0, pages: 0 };
+            // Guarded: Drizzle rejects an empty VALUES list, and a user whose
+            // accounts are all non-EUR now leaves nothing to write.
+            if (accounts.length > 0) {
+              await this.db
+                .insert(schema.accounts)
+                .values(
+                  accounts.map((a) => ({
+                    id: a.id,
+                    userId,
+                    name: a.name ?? null,
+                    type: a.type,
+                    currency: a.currency,
+                    currentBalance: a.balance.toFixed(2),
+                    lastSyncedAt: new Date(),
+                  })),
+                )
+                .onConflictDoUpdate({
+                  target: schema.accounts.id,
+                  set: {
+                    name: sql`excluded.name`,
+                    type: sql`excluded.type`,
+                    currency: sql`excluded.currency`,
+                    currentBalance: sql`excluded.current_balance`,
+                    lastSyncedAt: sql`excluded.last_synced_at`,
+                  },
+                });
+            }
+
+            const totals = { fresh: 0, duplicate: 0, amended: 0, pages: 0, skipped: 0 };
             const covered: string[] = [];
             let failed = 0;
             let timedOut = false;
@@ -121,6 +142,7 @@ export class SyncService {
                   totals.fresh += counts.fresh;
                   totals.duplicate += counts.duplicate;
                   totals.amended += counts.amended;
+                  totals.skipped += counts.skipped;
                   totals.pages += 1;
                   if (run.isPastDeadline()) {
                     timedOut = true;
@@ -205,6 +227,18 @@ export class SyncService {
                 ...(timedOut
                   ? ['Sync aborted on its deadline; upstream was too slow. Retry later.']
                   : []),
+                ...(skippedAccounts.length > 0
+                  ? [
+                      `${String(skippedAccounts.length)} account(s) skipped as non-EUR; ` +
+                        'this service does no FX conversion and scores EUR only',
+                    ]
+                  : []),
+                ...(totals.skipped > 0
+                  ? [
+                      `${String(totals.skipped)} transaction(s) skipped as non-EUR; ` +
+                        'they are neither converted nor counted toward the score',
+                    ]
+                  : []),
               ],
             };
           } finally {
@@ -228,10 +262,20 @@ export class SyncService {
     page: readonly BankingTransaction[],
     userId: string,
     syncRunId: string,
-  ): Promise<{ fresh: number; duplicate: number; amended: number }> {
-    if (page.length === 0) return { fresh: 0, duplicate: 0, amended: 0 };
+  ): Promise<{ fresh: number; duplicate: number; amended: number; skipped: number }> {
+    // Dropped here rather than at the Zod boundary: rejecting the page would
+    // fail the whole account walk over one foreign row, and the rest of that
+    // account's EUR history is still worth scoring.
+    const eligible = page.filter((t) => isSupportedCurrency(t.currency));
+    const skipped = page.length - eligible.length;
+    for (const t of page) {
+      if (!isSupportedCurrency(t.currency)) {
+        nonEurSkipped.add(1, { kind: 'transaction', currency: t.currency });
+      }
+    }
+    if (eligible.length === 0) return { fresh: 0, duplicate: 0, amended: 0, skipped };
 
-    const rows = page.map((t) => ({
+    const rows = eligible.map((t) => ({
       id: t.id,
       accountId: t.account_id,
       userId,
@@ -297,7 +341,7 @@ export class SyncService {
         else if (prior === r.contentHash) duplicate += 1;
         else amended += 1;
       }
-      return { fresh, duplicate, amended };
+      return { fresh, duplicate, amended, skipped };
     });
   }
 }

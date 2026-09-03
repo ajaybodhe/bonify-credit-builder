@@ -40,6 +40,15 @@ export const categoryRefreshFailures = meter.createCounter('sync.category_refres
   description: 'Failed merchant category refreshes, by reason (lost_race | upstream)',
 });
 
+/**
+ * How much foreign-currency data this provider actually sends. The service does
+ * no FX, so these rows are dropped rather than combined — this is the only way
+ * to know whether that is discarding a rounding error or half an applicant.
+ */
+export const nonEurSkipped = meter.createCounter('sync.non_eur_skipped', {
+  description: 'Accounts and transactions skipped as non-EUR, by kind and currency',
+});
+
 export const bankingApiRequests = meter.createCounter('banking.requests', {
   description: 'Banking API calls by endpoint and status class',
 });

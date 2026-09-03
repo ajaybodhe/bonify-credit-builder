@@ -35,8 +35,10 @@ comes from an API that can be slow, incomplete, or wrong.
 - Real-time or streaming ingestion. Sync is caller-triggered.
 - Serving a score for a window the sync has not covered. We refuse instead.
 - Being the system of record for transactions. The Banking API owns it.
-- Tombstoning an account that disappears upstream, and rejecting non-EUR
-  transactions. Both currently fail _silently_ rather than loudly.
+- FX conversion. The service is EUR-only; foreign-currency rows are dropped at
+  ingest and counted, never converted (§4.5).
+- Tombstoning an account that disappears upstream. Currently fails _silently_
+  rather than loudly.
 
 ---
 
@@ -393,7 +395,8 @@ next time.
 | Banking API down during scoring                | Non-event. Scoring makes no outbound call at all: categories are read locally at the version the covering sync recorded, or the newest stored if it recorded none.                                                                                                                                           |
 | `from` in the future                           | Accepted; coverage will not extend that far, so it refuses.                                                                                                                                                                                                                                                  |
 | Own-account transfer                           | Reclassified by account type and category group: into savings is saving, out of savings is dis-saving, same-type is ignored. Never income **where the data identifies it**. A transfer from the user's own account at another bank does not, and counts as income; see [scoring-model.md](scoring-model.md). |
-| Account removed upstream · non-EUR transaction | **Not handled** — see non-goals.                                                                                                                                                                                                                                                                             |
+| Non-EUR account or transaction                 | Dropped at ingest, counted on `sync.non_eur_skipped` and reported in the sync `warnings`. The account's EUR history is still scored; a non-EUR account is dropped whole, because its balance would otherwise anchor the reconstruction.                                                                      |
+| Account removed upstream                       | **Not handled** — see non-goals.                                                                                                                                                                                                                                                                             |
 
 ### 4.7 Observability
 

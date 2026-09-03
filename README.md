@@ -218,12 +218,12 @@ builds.
   and would be the first thing to add.
 - **No deployment topology** — no orchestrator manifests, no IaC, no
   environments. The image is built by CI and published nowhere.
-- **Observability is instrumented but not operationalised.** 18 metrics, traces
+- **Observability is instrumented but not operationalised.** 19 metrics, traces
   and structured logs all work, but no collector configuration ships, so with no
   exporter endpoint set the SDK never starts. No dashboards, no alerting.
-- **No account tombstoning and no non-EUR rejection.** An account that
-  disappears upstream keeps scoring; a non-EUR transaction is treated as EUR.
-  Both fail silently rather than loudly, which is the part that matters.
+- **No account tombstoning.** An account that disappears upstream keeps
+  scoring, and does so silently rather than loudly, which is the part that
+  matters.
 - **Reversals are not implemented.** The `status` column carries `amended` and
   `reversed` and scoring filters on `active`, but nothing writes a non-`active`
   status — this provider exposes no reversal signal.

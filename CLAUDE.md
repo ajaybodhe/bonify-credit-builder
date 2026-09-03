@@ -48,6 +48,10 @@ model, and only `db/` knows SQL.**
   entries stay forever. Snapshots store `model_version` and `category_version`,
   never copies.
 - **Money is `numeric(14,2)` and a string in transit** — never a JS float.
+- **EUR only, and non-EUR rows are dropped at ingest**, counted on
+  `sync.non_eur_skipped` and named in the sync `warnings`. Never converted,
+  never combined. A non-EUR account is dropped whole — its balance would anchor
+  the negative-balance reconstruction. See `src/lib/currency.ts`.
 - **Dates are plain `YYYY-MM-DD` in UTC.** A booking date has no timezone.
 - **All outbound HTTP goes through `src/banking/http.ts`.** A lint rule blocks
   bare `fetch`.
