@@ -7,6 +7,14 @@ import type { ScoredTransaction } from './scoring.js';
  * Rebuilding the inputs a past score was computed from: `ingested_at` dates every
  * row, amendments archive the prior state, nothing is deleted. Matching
  * `input_hash` is what makes it an audit rather than a re-run.
+ *
+ * Only `hashScoringInputs` has a caller in the service today — the rebuild below
+ * is exercised by `tests/integration/reproducibility.test.ts` and nothing else.
+ * That is deliberate: the storage decisions it depends on (never deleting,
+ * archiving before overwrite, dating every row) had to be made while the schema
+ * was being written, not retrofitted afterwards, and a rebuild that is never run
+ * is a claim rather than a guarantee. The endpoint that would expose it is in
+ * docs/discussion-topics.md; it is not in scope here.
  */
 
 export interface HistoricalTransaction {

@@ -196,6 +196,42 @@ describe('category pinning decides whether a score can be served', () => {
   });
 });
 
+describe('only a real, current, EUR balance anchors the reconstruction', () => {
+  /**
+   * A dormant account's balance is frozen at whenever upstream stopped
+   * publishing it, and a null balance is not zero. Anchoring on either deducts
+   * from a live score for a figure we do not actually have — up to the full
+   * -10 of the negative-balance term.
+   */
+  it('a dormant account carrying a negative balance changes nothing', async () => {
+    await seedDictionary(V);
+    await seedTransactions();
+    await seedRun(V, [ACCOUNT]);
+    const before = await service().getReliability(USER, FROM);
+
+    await pool.query('DELETE FROM score_snapshots WHERE user_id = $1', [USER]);
+    await pool.query(
+      `INSERT INTO accounts (id, user_id, currency, type, current_balance, status)
+       VALUES ('acc_orch_closed', $1, 'EUR', 'checking', '-5000.00', 'dormant')`,
+      [USER],
+    );
+    const after = await service().getReliability(USER, FROM);
+
+    expect(after.metrics.negative_balance_days).toBe(before.metrics.negative_balance_days);
+    expect(after.reliability_index).toBe(before.reliability_index);
+  });
+
+  it('ignores an account whose balance was never reported', async () => {
+    await seedDictionary(V);
+    await seedTransactions();
+    await pool.query('UPDATE accounts SET current_balance = NULL WHERE id = $1', [ACCOUNT]);
+    await seedRun(V);
+
+    const res = await service().getReliability(USER, FROM);
+    expect(res.metrics.negative_balance_days).toBe(0);
+  });
+});
+
 describe('a served score, end to end through the service', () => {
   beforeEach(async () => {
     await seedDictionary(V);

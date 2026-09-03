@@ -20,9 +20,16 @@ function upstreamStatus(err: UpstreamError): number | undefined {
   return typeof status === 'number' ? status : undefined;
 }
 
+/**
+ * The published range moves as the provider books new data. Cached for the
+ * process lifetime, a long-running container would keep syncing to a stale `to`
+ * and silently stop fetching recent transactions.
+ */
+const DATA_RANGE_TTL_MS = 300_000;
+
 export class BankingApiClient {
   private readonly http: HttpClient;
-  private dataRange: DataRange | undefined;
+  private dataRange: { value: DataRange; readAt: number } | undefined;
 
   constructor(
     env: Env,
@@ -37,16 +44,18 @@ export class BankingApiClient {
   }
 
   /** The only bound on how far back to sync: there is no account-opened date. */
-  async getDataRange(): Promise<DataRange> {
-    if (this.dataRange) return this.dataRange;
+  async getDataRange(now: number = Date.now()): Promise<DataRange> {
+    if (this.dataRange && now - this.dataRange.readAt < DATA_RANGE_TTL_MS) {
+      return this.dataRange.value;
+    }
     const body = await this.http.get<{ data_range?: { from?: string; to?: string } }>('/');
     const from = body.data_range?.from;
     const to = body.data_range?.to;
     if (!from || !to) {
       throw new UpstreamError('Discovery endpoint did not publish a data_range', { body });
     }
-    this.dataRange = { from, to };
-    return this.dataRange;
+    this.dataRange = { value: { from, to }, readAt: now };
+    return this.dataRange.value;
   }
 
   async listAccounts(userId: string, signal?: AbortSignal): Promise<BankingAccount[]> {

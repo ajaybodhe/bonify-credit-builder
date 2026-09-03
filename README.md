@@ -218,7 +218,7 @@ builds.
   and would be the first thing to add.
 - **No deployment topology** — no orchestrator manifests, no IaC, no
   environments. The image is built by CI and published nowhere.
-- **Observability is instrumented but not operationalised.** 19 metrics, traces
+- **Observability is instrumented but not operationalised.** 20 metrics, traces
   and structured logs all work, but no collector configuration ships, so with no
   exporter endpoint set the SDK never starts. No dashboards, no alerting.
 - **A closed account is inferred, not signalled.** Upstream publishes no

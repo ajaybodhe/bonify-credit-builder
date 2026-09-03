@@ -154,10 +154,16 @@ describe('dedupe by content hash', () => {
     expect((await stored())?.revision).toBe(1);
   });
 
-  it('the same id twice in one page resolves to one row, not a constraint error', async () => {
-    // Upstream pagination is hostile: the same row can appear on two pages.
-    const res = await sync([[txn()], [txn()]]);
-    expect(res.new_transactions + res.duplicate_transactions).toBe(2);
+  /**
+   * The cursor is a positional offset into an unordered result set, so one page
+   * can carry the same id twice. Postgres raises 21000 on a multi-row upsert
+   * whose VALUES repeat a key, which would fail the walk and leave the account
+   * uncovered — refusing every later score, permanently.
+   */
+  it('the same id twice in ONE page resolves to one row, not a constraint error', async () => {
+    const res = await sync([[txn(), txn({ amount: -99.99 })]]);
+    expect(res.new_transactions).toBe(1);
+    expect((await stored())?.amount).toBe('-99.99'); // last occurrence wins
     const { rows } = await pool.query<{ c: string }>(
       "SELECT count(*)::text AS c FROM transactions WHERE id = 'txn_1'",
     );

@@ -7,6 +7,7 @@ import { scoringWindow, type ScoringWindow } from '../../lib/date.js';
 import { scoreSnapshots, type Transaction } from '../../db/schema.js';
 import { classifyTransfers, type AccountType } from './transfers.js';
 import { hashScoringInputs } from './reconstruct.js';
+import { isSupportedCurrency } from '../../lib/currency.js';
 import { CURRENT_MODEL_VERSION, modelFor } from './models/index.js';
 import type { ReliabilityResponse } from './schemas.js';
 import type { CategoryResolver } from './categories.js';
@@ -72,8 +73,10 @@ export class ReliabilityService {
         id: string;
         type: string | null;
         balance: string | null;
+        status: string;
+        currency: string;
       }>(
-        `SELECT a.id, a.type, a.current_balance::text AS balance
+        `SELECT a.id, a.type, a.current_balance::text AS balance, a.status, a.currency
            FROM accounts a
           WHERE a.user_id = $1`,
         [userId],
@@ -124,8 +127,18 @@ export class ReliabilityService {
     );
 
     const modelStartedAt = performance.now();
+    /**
+     * Only accounts whose balance is a real, current, EUR figure anchor the
+     * reconstruction. A dormant account's balance is frozen at whenever
+     * upstream stopped publishing it, and a null one is not zero — defaulting
+     * either would deduct up to 10 points from a live score for a number we do
+     * not have. Types above still come from every account, dormant included, or
+     * a closed savings account's history would be misread as income.
+     */
     const closingBalances = Object.fromEntries(
-      gathered.accounts.map((a) => [a.id, a.balance ?? '0.00']),
+      gathered.accounts
+        .filter((a) => a.status === 'active' && isSupportedCurrency(a.currency))
+        .flatMap((a) => (a.balance === null ? [] : [[a.id, a.balance] as const])),
     );
 
     const result = modelFor(CURRENT_MODEL_VERSION).compute({

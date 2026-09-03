@@ -285,7 +285,9 @@ export class SyncService {
       );
     } catch (err) {
       if (err instanceof ConflictError) {
-        syncConflictsTotal.add(1, { 'user.id': userId });
+        // No user id label: unbounded cardinality, and a credit applicant's
+        // identifier does not belong in the metrics backend.
+        syncConflictsTotal.add(1);
       } else {
         syncRunsTotal.add(1, { status: 'failed' });
         syncDuration.record((Date.now() - startedAt) / 1000, { status: 'failed' });
@@ -311,7 +313,16 @@ export class SyncService {
     }
     if (eligible.length === 0) return { fresh: 0, duplicate: 0, amended: 0, skipped };
 
-    const rows = eligible.map((t) => ({
+    /**
+     * One page can carry the same id twice — the cursor is a positional offset
+     * into an unordered result set, so a shifting result set repeats rows. A
+     * multi-row `ON CONFLICT DO UPDATE` whose VALUES repeat a key raises
+     * `21000`, which fails the account walk and leaves it uncovered, so every
+     * later score refuses. Last occurrence wins.
+     */
+    const deduped = [...new Map(eligible.map((t) => [t.id, t])).values()];
+
+    const rows = deduped.map((t) => ({
       id: t.id,
       accountId: t.account_id,
       userId,
