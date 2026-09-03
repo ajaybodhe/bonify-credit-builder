@@ -1,6 +1,6 @@
 import { drizzle } from 'drizzle-orm/node-postgres';
 import type { FastifyInstance } from 'fastify';
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../../src/app.js';
 import { NotFoundError } from '../../src/lib/errors.js';
 import type { BankingApiClient } from '../../src/banking/client.js';
@@ -8,7 +8,7 @@ import type { Env } from '../../src/config/env.js';
 import type { Database } from '../../src/db/client.js';
 import * as schema from '../../src/db/schema.js';
 import { FakeBankingApi, buildTransactions } from '../helpers/fake-banking-api.js';
-import { testPool } from '../helpers/db.js';
+import { isolateDictionary, testPool } from '../helpers/db.js';
 
 /**
  * E2E tier: the whole app via `app.inject()`, real Postgres, and the Banking
@@ -88,6 +88,11 @@ const env = {
 } as unknown as Env;
 
 let app: FastifyInstance;
+let restoreDictionary: () => Promise<void>;
+
+beforeAll(async () => {
+  restoreDictionary = await isolateDictionary(pool);
+});
 
 beforeEach(async () => {
   await pool.query('DELETE FROM score_snapshots WHERE user_id = $1', [USER]);
@@ -99,6 +104,7 @@ beforeEach(async () => {
 
 afterAll(async () => {
   await app.close();
+  await restoreDictionary();
   await pool.end();
 });
 
