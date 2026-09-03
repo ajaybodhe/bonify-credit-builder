@@ -90,14 +90,7 @@ describe('connection timeouts', () => {
 describe('a claim that loses on lock_timeout is still a 409', () => {
   const USER = 'user_lock_timeout';
 
-  /**
-   * Two ways to lose the claim, and they raise different SQLSTATEs. Normally
-   * the winner has already committed, so the loser gets `23505`. If the winner
-   * is still in flight the loser waits on the uncommitted index key instead,
-   * and `lock_timeout` fires with `55P03`. Both mean "someone else holds this
-   * user's slot" — a 409. Only mapping `23505` would turn the second into a
-   * 500, and it is the one that shows up under load.
-   */
+  /** Two ways to lose the claim, and they raise different SQLSTATEs. */
   it('maps 55P03 to ConflictError, not to a 500', async () => {
     await pool.query('DELETE FROM sync_runs WHERE user_id = $1', [USER]);
 
@@ -130,13 +123,7 @@ describe('a claim that loses on lock_timeout is still a 409', () => {
   });
 });
 
-/**
- * Why reclamation survives the arrival of connection timeouts.
- *
- * They look like they overlap, and they do not: the timeouts bound SESSIONS and
- * STATEMENTS, while a wedged claim is COMMITTED DATA. Nothing Postgres can time
- * out will clear a committed row.
- */
+/** Why reclamation survives the arrival of connection timeouts. */
 describe('connection timeouts cannot replace reclamation', () => {
   const USER = 'user_wedge_test';
   const running = async () =>

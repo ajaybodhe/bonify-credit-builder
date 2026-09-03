@@ -1,9 +1,8 @@
 # Discussion topics
 
-> **Status: draft.** The brief lists these as _not required to be implemented_ —
-> they are the agenda for the discussion interview. Each section below is seeded
-> with the position the current design already takes, so the conversation starts
-> from something concrete. Items marked **TODO** need a decision.
+> The brief lists these as _not required to be implemented_. Each section states
+> the position the current design already takes, so the conversation starts from
+> something concrete rather than from a blank page.
 
 ---
 
@@ -104,9 +103,9 @@ see _Caching_ below.
 
 Already designed in:
 
-- **Idempotency** — `transactions.id` _is_ the upstream id, so dedupe is
-  `ON CONFLICT (id) DO NOTHING`, not a read-then-write race. Re-running a sync
-  is always safe.
+- **Idempotency** — `transactions.id` _is_ the upstream id, so dedupe is a
+  primary-key conflict rather than a read-then-write race. The conflict compares
+  a content hash, so re-running a sync is safe and an amendment is still seen.
 - **Partial syncs** — one database transaction per page, not one per user. A
   crash on page 40 keeps pages 1–39; `sync_runs.status` records `partial`.
 - **Out-of-order and backdated transactions** — arrival order is irrelevant,
@@ -165,20 +164,20 @@ database and the upstream rate limit are the real constraints.
   because webhook delivery is best-effort and a missed event is an invisible
   gap in a credit decision.
 
-**TODO:** whether a score should be invalidated eagerly when new transactions
-land, or computed on read. Current design is compute-on-read, which is simpler
-and always fresh.
+**Compute on read, not invalidate on write.** Eager invalidation needs a
+dependency graph between transactions and every window that touched them, and
+buys nothing: the cost of a score is the query, not the arithmetic.
 
 ## Caching and performance
 
 What is worth caching, and what is not:
 
-| Candidate                            | Verdict                                                                                                                                       |
-| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| Raw transactions                     | Already cached — that _is_ the local store.                                                                                                   |
-| Monthly aggregates per user/category | **Yes**, when scoring volume justifies it. Invalidate on sync for the affected months only.                                                   |
-| Computed scores                      | **No, and `score_snapshots` is not a cache** — see below. As a cache it would save almost nothing: the cost is the query, not the arithmetic. |
-| Merchant category dictionary         | **Yes**, in-process with a short TTL. It changes rarely and is fetched on every scoring request today.                                        |
+| Candidate                            | Verdict                                                                                                                                            |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Raw transactions                     | Already cached — that _is_ the local store.                                                                                                        |
+| Monthly aggregates per user/category | **Yes**, when scoring volume justifies it. Invalidate on sync for the affected months only.                                                        |
+| Computed scores                      | **No, and `score_snapshots` is not a cache** — see below. As a cache it would save almost nothing: the cost is the query, not the arithmetic.      |
+| Merchant category dictionary         | **Already cached** in-process, per version. Scoring never fetches it — the sync path refreshes it, and a score reads the version it was pinned to. |
 
 ### `score_snapshots` is an audit trail, not a cache
 
@@ -230,30 +229,18 @@ moved on**. Three things make that true:
 Together those answer "why did this applicant get 48, and would they get 48
 today?" — which are two different questions, and both get asked.
 
-**TODO:** retention. Snapshots are the audit trail, but they are also personal
-financial data. GDPR erasure and audit retention pull in opposite directions.
+**Retention is the open question.** Snapshots are the audit trail and also
+personal financial data; GDPR erasure and audit retention pull against each
+other. The likely shape is erasing the inputs while keeping the decision and its
+hashes, so a past decision stays explainable without remaining re-derivable.
 
 ## Bias and fairness
 
-Covered in depth in [`scoring-model.md`](scoring-model.md#bias-and-fairness).
-The headline for the discussion:
-
-Every failure mode of this model has the same shape — **missing data scoring as
-bad data**. Cash income is invisible and reads as no income. An essential
-category the applicant has no reason to spend in reads as six missed
-category-months. A rent payment made from an account at another bank
-reads as not paying rent. Each of these lands hardest on people who are
-thin-file _because_ they are young, recently arrived, or previously unbanked —
-precisely the population the product exists to serve.
-
-The mitigation direction: wherever the model cannot distinguish "did not happen"
-from "was not visible", it should say so in `drivers` and widen its uncertainty,
-rather than quietly deduct.
-
-Measurement, given `score_snapshots`: score distribution by cohort (account age,
-transaction volume, number of connected accounts) and the rate at which each
-component contributes zero. A component that returns zero far more often for
-low-volume accounts is measuring data availability, not reliability.
+Covered in depth in [`scoring-model.md`](scoring-model.md#bias-and-fairness),
+including the mitigation direction and how to measure whether it is happening.
+The headline for the discussion: every failure mode of this model has the same
+shape — **missing data scoring as bad data** — and each instance lands hardest on
+the people the product exists to serve.
 
 ## Incident thinking
 

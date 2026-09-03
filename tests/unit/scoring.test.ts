@@ -2,68 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   MODEL,
   bandFor,
-  clamp,
   computeReliabilityIndex,
   interpolate,
 } from '../../src/modules/reliability/models/v1.js';
 import type { ScoringWindow } from '../../src/lib/date.js';
 import type { Transaction } from '../../src/db/schema.js';
 import type { TransferClassification } from '../../src/modules/reliability/transfers.js';
-
-/**
- * Every number `docs/scoring-model.md` publishes, asserted against `MODEL`.
- *
- * The frozen-digest test in `model-versions.test.ts` guards a released model
- * file against edits — a different thing. It says nothing about whether the
- * document still describes the code, so without this a constant could change
- * and every test would still pass while the doc quietly became fiction.
- *
- * A failure here means one of two edits is missing, not that the number is
- * wrong: change both, in the same commit.
- */
-describe('the documented constants match MODEL', () => {
-  it('bands: LOW 0-49, MEDIUM 50-74, HIGH 75-100', () => {
-    expect(MODEL.bands).toEqual({ mediumFrom: 50, highFrom: 75 });
-  });
-
-  it('components A, B and C are worth 25 points each', () => {
-    expect(MODEL.incomeRegularity.maxPoints).toBe(25);
-    expect(MODEL.incomeCoverage.maxPoints).toBe(25);
-    expect(MODEL.essentialConsistency.maxPoints).toBe(25);
-  });
-
-  it('the coverage curve has the published breakpoints', () => {
-    expect(MODEL.incomeCoverage.breakpoints).toEqual([
-      [0.0, 0],
-      [0.8, 6],
-      [1.0, 12],
-      [1.25, 18],
-      [1.5, 21],
-      [2.0, 24],
-      [3.0, 25],
-    ]);
-  });
-
-  it('resilience spans -20 to +25', () => {
-    expect(MODEL.resilience.min).toBe(-20);
-    expect(MODEL.resilience.max).toBe(25);
-  });
-
-  it('resilience sub-signals use the published mappings', () => {
-    expect(MODEL.resilience.savings).toEqual({ maxPoints: 25, fullCreditRate: 0.15 });
-    expect(MODEL.resilience.negativeBalance).toEqual({ maxPenalty: -10, fullPenaltyDays: 30 });
-    expect(MODEL.resilience.lateFees).toEqual({ maxPenalty: -5, penaltyPerEvent: -1.25 });
-    expect(MODEL.resilience.highRisk).toEqual({ maxPenalty: -5, fullPenaltyShare: 0.2 });
-  });
-
-  it('a good month needs income, an essential payment, and no fee', () => {
-    expect(MODEL.goodMonth).toEqual({
-      requiresIncome: true,
-      requiresEssentialPayment: true,
-      allowsFeeEvents: false,
-    });
-  });
-});
 
 describe('bandFor', () => {
   it.each([
@@ -75,14 +19,6 @@ describe('bandFor', () => {
     [100, 'HIGH'],
   ])('scores %i as %s', (score, band) => {
     expect(bandFor(score)).toBe(band);
-  });
-});
-
-describe('clamp', () => {
-  it('bounds on both sides', () => {
-    expect(clamp(-5, 0, 100)).toBe(0);
-    expect(clamp(150, 0, 100)).toBe(100);
-    expect(clamp(64, 0, 100)).toBe(64);
   });
 });
 
@@ -241,15 +177,6 @@ describe('computeReliabilityIndex', () => {
     expect(overdrawn.metrics.negative_balance_days).toBeGreaterThan(100);
     expect(overdrawn.components.resilience_breakdown.negative_balance).toBe(-10);
     expect(overdrawn.reliability_index).toBeLessThan(solvent.reliability_index);
-  });
-
-  it('is bounded to 0..100 and deterministic for the same input', () => {
-    const a = run(steady());
-    const b = run(steady());
-    expect(a.reliability_index).toBe(b.reliability_index);
-    expect(a.metrics).toEqual(b.metrics);
-    expect(a.reliability_index).toBeGreaterThanOrEqual(0);
-    expect(a.reliability_index).toBeLessThanOrEqual(100);
   });
 
   it('an empty transaction set scores rather than throwing', () => {

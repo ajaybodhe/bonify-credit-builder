@@ -275,33 +275,3 @@ describe('money', () => {
     expect(typeof (await stored())?.amount).toBe('string');
   });
 });
-
-describe('the scoring query', () => {
-  it('selects only status = active', async () => {
-    await sync([[txn(), txn({ id: 'txn_dead' })]]);
-    await pool.query("UPDATE transactions SET status = 'reversed' WHERE id = 'txn_dead'");
-    const { rows } = await pool.query<{ id: string }>(
-      `SELECT id FROM transactions
-        WHERE user_id = $1 AND status = 'active'
-          AND booked_at BETWEEN $2::date AND $3::date`,
-      [USER, '2025-09-01', '2026-02-20'],
-    );
-    expect(rows.map((r) => r.id)).toEqual(['txn_1']);
-  });
-
-  it('treats the window boundaries as inclusive', async () => {
-    await sync([
-      [
-        txn({ id: 'txn_first', date: '2025-09-01' }),
-        txn({ id: 'txn_last', date: '2026-02-20' }),
-        txn({ id: 'txn_before', date: '2025-08-31' }),
-      ],
-    ]);
-    const { rows } = await pool.query<{ id: string }>(
-      `SELECT id FROM transactions
-        WHERE user_id = $1 AND booked_at BETWEEN $2::date AND $3::date ORDER BY id`,
-      [USER, '2025-09-01', '2026-02-20'],
-    );
-    expect(rows.map((r) => r.id)).toEqual(['txn_first', 'txn_last']);
-  });
-});

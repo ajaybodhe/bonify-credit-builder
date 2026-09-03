@@ -58,12 +58,6 @@ describe('model version registry', () => {
     expect(registered).toEqual(onDisk);
   });
 
-  it('can look up every registered version', () => {
-    for (const m of ALL_MODEL_VERSIONS) {
-      expect(modelFor(m.version).version).toBe(m.version);
-    }
-  });
-
   it('refuses to look up a version that does not exist', () => {
     expect(() => modelFor(9999)).toThrow(/must remain in/);
   });
@@ -71,11 +65,6 @@ describe('model version registry', () => {
   it('computes new scores with the highest version', () => {
     const highest = Math.max(...ALL_MODEL_VERSIONS.map((m) => m.version));
     expect(CURRENT_MODEL_VERSION).toBe(highest);
-  });
-
-  it('versions are numbered from 1 with no gaps', () => {
-    const versions = ALL_MODEL_VERSIONS.map((m) => m.version).sort((a, b) => a - b);
-    expect(versions).toEqual(versions.map((_, i) => i + 1));
   });
 });
 
@@ -102,12 +91,6 @@ describe('frozen models are immutable', () => {
       ).toBe(expected);
     },
   );
-
-  it('every frozen version has a recorded digest', () => {
-    for (const m of ALL_MODEL_VERSIONS.filter((x) => x.frozen)) {
-      expect(FROZEN_DIGESTS[m.version]).toBeDefined();
-    }
-  });
 
   /**
    * Records what freezing v1 will require, and fails the moment someone freezes

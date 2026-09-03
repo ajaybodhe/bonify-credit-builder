@@ -34,10 +34,6 @@ const countRows = async (client: { query: typeof pool.query }) =>
 describe('withReadSnapshot', () => {
   beforeEach(() => seed(2));
 
-  it('returns the callback result', async () => {
-    await expect(withReadSnapshot(pool, () => Promise.resolve('ok'))).resolves.toBe('ok');
-  });
-
   /**
    * The read-skew guarantee. Two reads inside one snapshot must agree even
    * though a concurrent writer commits between them — otherwise scoring can

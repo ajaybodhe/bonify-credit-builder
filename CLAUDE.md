@@ -78,8 +78,8 @@ model, and only `db/` knows SQL.**
 - Run `npm run check` before reporting work as done.
 - Put a test in the cheapest tier that can prove it: unit = no I/O; integration =
   one real boundary; e2e = properties spanning layers; contract = assumptions
-  about the live upstream. Reconstruction mechanics are integration; that a
-  served score stays re-derivable is e2e.
+  about the live upstream. Reconstruction and re-derivability are both
+  integration — the e2e tier proves the endpoints work end to end, not the audit.
 - `tests/helpers/fake-banking-api.ts` deliberately reproduces the upstream's
   hostile pagination. Do not "fix" it into tidy ordering.
 - Fill in the `it.todo` cases rather than inventing a parallel set.

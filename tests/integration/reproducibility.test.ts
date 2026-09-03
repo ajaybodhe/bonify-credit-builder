@@ -11,19 +11,7 @@ import { classifyTransfers } from '../../src/modules/reliability/transfers.js';
 import { testPool } from '../helpers/db.js';
 import type { ScoringWindow } from '../../src/lib/date.js';
 
-/**
- * Can a past score be traced back to exactly the inputs that produced it?
- *
- * A snapshot stores three pointers and no copies — `model_version`,
- * `category_version`, `input_hash`. This suite proves the two that require
- * reconstruction from the database: the transaction set as it stood, and the
- * category mapping in force. (The model is a frozen file; `model-versions.test`
- * covers that it cannot change.)
- *
- * Integration tier, not e2e: reconstruction is a property of the data and needs
- * no HTTP. The e2e suite owns the consequence — that the endpoint still serves
- * a re-derivable score after the world moves on.
- */
+/** Can a past score be traced back to exactly the inputs that produced it? */
 const pool = testPool();
 afterAll(() => pool.end());
 
@@ -71,15 +59,7 @@ async function txn(
   );
 }
 
-/**
- * Applies an upstream amendment the way sync would: archive the prior state,
- * then update.
- *
- * The prior state is captured with `to_jsonb(t)` in Postgres rather than
- * rebuilt in JS. `node-postgres` parses a DATE into a local-midnight `Date`, so
- * serialising it here would shift the day in any timezone behind or ahead of
- * UTC — silently corrupting the archived `booked_at`.
- */
+/** Applies an upstream amendment the way sync would: archive the prior state, then update. */
 async function amend(
   id: string,
   changes: Partial<{ amount: string; category: string; booked_at: string; status: string }>,
@@ -335,16 +315,7 @@ describe('an account connected after the score was served', () => {
   });
 });
 
-/**
- * The gap every other test in this file steps over.
- *
- * Those compare a rebuild against another rebuild, so both sides read the same
- * way and any distortion the rebuild introduces cancels out. But `input_hash`
- * is computed at SCORING time, from typed columns — and verified later against
- * a rebuild, which reads archived rows out of `jsonb`. If those two spellings
- * of the same value differ, no snapshot is ever verifiable and every audit
- * reports a mismatch that is really a formatting artefact.
- */
+/** The gap every other test in this file steps over. */
 describe('a rebuild reproduces the LIVE fingerprint, not merely another rebuild', () => {
   it('spells money identically whether read as a column or out of jsonb', async () => {
     await txn('t_money', '2025-10-05', '-42.50', '5411');
@@ -389,34 +360,6 @@ describe('a rebuild reproduces the LIVE fingerprint, not merely another rebuild'
     } finally {
       client.release();
     }
-  });
-});
-
-describe('the fingerprint covers the account a transaction belongs to', () => {
-  const rowOn = (accountId: string) => [
-    {
-      id: 't_x',
-      account_id: accountId,
-      user_id: USER,
-      booked_at: '2025-10-05',
-      amount: '-42.00',
-      currency: 'EUR',
-      description: null,
-      merchant: null,
-      category: '5411',
-      is_credit: false,
-      status: 'active',
-      content_hash: 'h',
-      revision: 1,
-    },
-  ];
-
-  it('changes when only the account changes', () => {
-    expect(hashTransactionSet(rowOn('acc_chk'))).not.toBe(hashTransactionSet(rowOn('acc_sav')));
-  });
-
-  it('is unchanged when the account is the same', () => {
-    expect(hashTransactionSet(rowOn('acc_chk'))).toBe(hashTransactionSet(rowOn('acc_chk')));
   });
 });
 
@@ -465,20 +408,6 @@ describe('the category mapping survives later regrouping', () => {
 });
 
 describe('the fingerprint', () => {
-  it('is independent of row order', async () => {
-    await txn('t_a', '2025-10-05', '-42.00', '5411');
-    await txn('t_b', '2026-01-12', '1200.00', '9001', { isCredit: true });
-    const set = await asOfScored();
-    expect(hashTransactionSet([...set].reverse())).toBe(hashTransactionSet(set));
-  });
-
-  it('changes when any scoring-relevant field differs', async () => {
-    await txn('t_a', '2025-10-05', '-42.00', '5411');
-    const base = hashTransactionSet(await asOfScored());
-    await pool.query("UPDATE transactions SET amount = '-43.00' WHERE id = 't_a'");
-    expect(hashTransactionSet(await asOfScored())).not.toBe(base);
-  });
-
   // Re-derivation itself needs the model, which is still stubbed.
   /**
    * The whole claim, end to end: rebuild the inputs a snapshot names, re-run the

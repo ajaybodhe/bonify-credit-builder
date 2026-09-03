@@ -185,61 +185,36 @@ reasoning, worked examples, and an honest account of what the model cannot see.
 
 Stated plainly, so none of it has to be discovered.
 
-### Not verified on this machine
+**Not run on this machine.** Development was on macOS 12.4, which no current
+container runtime supports, so the Docker image has never been built here.
+Postgres runs natively (Postgres.app, port 5433 — the version and port the
+compose file and CI both use), so every database behaviour is exercised against
+a real Postgres. CI builds the image and checks the runtime stage can migrate.
+`npm run db:reset` is Docker-based and does not run here either. The 10 contract
+tests hit the live Banking API, so they are opt-in and out of the PR gate: a red
+build caused by someone else's outage teaches people to ignore red builds.
 
-**The Docker image has never been built here.** Development was on macOS 12.4
-(Intel), and current Docker Desktop requires macOS 13 or later; OrbStack has the
-same floor. No container runtime is installed — not Docker, Colima, Podman or
-Lima.
+**Out of scope, deliberately.**
 
-What was done instead:
+- **No authentication.** Either endpoint serves any `userId` to any caller. The
+  largest gap for a credit-adjacent service, and the first thing to add.
+- **No deployment topology** — no manifests, no IaC, no environments.
+- **Observability is instrumented, not operationalised.** 20 metrics, traces and
+  structured logs work, but no collector config ships and no exporter endpoint
+  is set, so the SDK never starts. No dashboards, no alerting.
 
-- **Postgres runs natively** via Postgres.app on port 5433 — the same version
-  (17) and port the compose file and CI use, so every database behaviour in this
-  repo is exercised against a real Postgres, including the concurrency and
-  isolation tests.
-- **CI builds the image** (`docker build`, then a check that the runtime stage
-  can load the migrator) on `ubuntu-latest`, which does have Docker. That job
-  will pass or fail on the first push; it has never run.
+**Inferred rather than signalled.** Upstream publishes no deletion signal, so an
+account missing from a successful listing is marked dormant and dropped from the
+coverage gate — an account omitted by mistake reads as closed until it returns.
+Transaction reversals and deletions are not handled at all for the same reason:
+no reversal flag, no link to an original. Amendments _are_ handled — the old row
+is archived and replaced.
 
-So the container path is **written and reviewed, not executed here**. CI is what
-verifies it. `npm run db:reset` is also Docker-based and does not run on this
-machine.
-
-**Contract tests are skipped by default** — 10 of them. They hit the live
-Banking API, so they are opt-in (`npm run test:contract`) and excluded from the
-PR gate: a red build caused by someone else's outage teaches people to ignore red
-builds.
-
-### Deliberately out of scope
-
-- **No authentication or authorization.** Either endpoint will serve any
-  `userId` to any caller. This is the largest gap for a credit-adjacent service
-  and would be the first thing to add.
-- **No deployment topology** — no orchestrator manifests, no IaC, no
-  environments. The image is built by CI and published nowhere.
-- **Observability is instrumented but not operationalised.** 20 metrics, traces
-  and structured logs all work, but no collector configuration ships, so with no
-  exporter endpoint set the SDK never starts. No dashboards, no alerting.
-- **A closed account is inferred, not signalled.** Upstream publishes no
-  deletion signal, so an account missing from a successful listing is marked
-  dormant and dropped from the coverage gate. If upstream ever omits an account
-  by mistake, we would read that as a closure until it reappears.
-- **Reversals and deletions are not implemented.** A change to a transaction is
-  handled: the old row is archived and replaced by the new one. Reversals and
-  deletions are not, because the provider exposes no way to recognise them — no
-  reversal flag, no link back to an original, no deletion signal.
-
-### Known inaccuracies in the model
-
-- **`negative_balance_days` is an estimate, not an observation.** The provider
-  reports one undated balance that does not reconcile with the transactions it
-  publishes, so the daily series is reconstructed backwards from it. For
-  `user_1001` this yields 63 days where the published example shows 54; the
-  reasoning is in [docs/scoring-model.md](docs/scoring-model.md).
-- **The weights are a reasoned starting point, not calibrated.** Nothing here is
-  fitted against repayment outcomes, so the score should inform a human decision
-  rather than make one.
+**The model is uncalibrated.** `negative_balance_days` is reconstructed from a
+single undated balance that does not reconcile with the transactions the provider
+publishes, so it is an estimate and differs from the brief's illustrative figure
+([why](docs/scoring-model.md)). The weights are reasoned, not fitted against
+repayment outcomes: the score should inform a human decision, not make one.
 
 ## Discussion topics
 

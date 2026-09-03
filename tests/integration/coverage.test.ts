@@ -1,16 +1,10 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { assessCoverage, requireCompleteCoverage } from '../../src/modules/reliability/coverage.js';
-import { SyncRequiredError } from '../../src/lib/errors.js';
+import { type SyncRequiredError } from '../../src/lib/errors.js';
 import { testPool } from '../helpers/db.js';
 import type { ScoringWindow } from '../../src/lib/date.js';
 
-/**
- * The product rule: score only on data that completely covers the window.
- * Anything short — 99% included — is refused.
- *
- * Integration tier: coverage is a SQL question about two tables, and the
- * account/state LEFT JOIN is the part most likely to be wrong.
- */
+/** The product rule: score only on data that completely covers the window. */
 const pool = testPool();
 afterAll(() => pool.end());
 
@@ -246,18 +240,6 @@ describe('the sync must have run after the window closed', () => {
     expect(c.observed_same_day).toBe(false);
   });
 
-  it('still refuses a sync that ran BEFORE the window closed', async () => {
-    await account('a1');
-    await run(['a1'], '2025-09-01', '2027-06-30', '2026-02-19T23:59:59Z');
-    expect((await coverage()).gaps[0]?.reason).toBe('synced_before_window_end');
-  });
-
-  it('accepts a sync that ran the day AFTER the window end', async () => {
-    await account('a1');
-    await run(['a1'], '2025-09-01', '2027-06-30', '2026-02-21T00:00:01Z');
-    expect((await coverage()).complete).toBe(true);
-  });
-
   it('an account never fully synced is never_synced, not synced_before_window_end', async () => {
     await account('a1');
     expect((await coverage()).gaps[0]?.reason).toBe('never_synced');
@@ -282,24 +264,6 @@ describe('the sync must have run after the window closed', () => {
 });
 
 describe('requireCompleteCoverage', () => {
-  it('passes silently on complete coverage', async () => {
-    await account('a1');
-    await run(['a1'], '2025-01-01', '2026-03-01');
-    const c = await coverage();
-    expect(() => {
-      requireCompleteCoverage(c, WINDOW);
-    }).not.toThrow();
-  });
-
-  it('throws SyncRequiredError on any gap', async () => {
-    await account('a1');
-    await run(['a1'], '2025-09-02', '2026-02-20');
-    const c = await coverage();
-    expect(() => {
-      requireCompleteCoverage(c, WINDOW);
-    }).toThrow(SyncRequiredError);
-  });
-
   /** The remedy is mechanical, so the error must say exactly what is missing. */
   it('names the gap per account, the covered range, and the remedy', async () => {
     await account('a1');

@@ -78,9 +78,7 @@ export class SyncService {
             const range = await this.banking.getDataRange();
             const published = await this.banking.listAccounts(userId, abort.signal);
 
-            // Single-currency by design: a foreign-currency account is dropped
-            // whole, balance included, since that balance anchors the
-            // negative-balance reconstruction. See lib/currency.ts.
+            // Dropped whole, balance included: it anchors the balance reconstruction.
             const accounts = published.filter((a) => isSupportedCurrency(a.currency));
             const skippedAccounts = published.filter((a) => !isSupportedCurrency(a.currency));
             for (const a of skippedAccounts) {
@@ -93,8 +91,7 @@ export class SyncService {
               );
             }
 
-            // Guarded: Drizzle rejects an empty VALUES list, and a user whose
-            // accounts are all non-EUR now leaves nothing to write.
+            // Drizzle rejects an empty VALUES list.
             if (accounts.length > 0) {
               await this.db
                 .insert(schema.accounts)
@@ -124,14 +121,10 @@ export class SyncService {
             }
 
             /**
-             * Tombstoning. Upstream publishes no deletion signal, so an account
-             * that vanishes from a SUCCESSFUL listing is the only evidence we
-             * get that it closed. `listAccounts` returns the whole set in one
-             * response and throws otherwise, so absence here is real and not a
-             * half-read page.
-             *
-             * Marked, never deleted: the transactions stay, and so does the
-             * history of every score already computed from them.
+             * Upstream publishes no deletion signal, so absence from a
+             * SUCCESSFUL listing is the only evidence an account closed —
+             * `listAccounts` returns the whole set or throws. Marked, never
+             * deleted: the transactions and past scores stay valid.
              */
             const publishedIds = published.map((a) => a.id);
             const tombstoned = await this.db.execute<{ id: string }>(
@@ -285,8 +278,7 @@ export class SyncService {
       );
     } catch (err) {
       if (err instanceof ConflictError) {
-        // No user id label: unbounded cardinality, and a credit applicant's
-        // identifier does not belong in the metrics backend.
+        // No user id label: unbounded cardinality, and it is personal data.
         syncConflictsTotal.add(1);
       } else {
         syncRunsTotal.add(1, { status: 'failed' });
@@ -301,9 +293,7 @@ export class SyncService {
     userId: string,
     syncRunId: string,
   ): Promise<{ fresh: number; duplicate: number; amended: number; skipped: number }> {
-    // Dropped here rather than at the Zod boundary: rejecting the page would
-    // fail the whole account walk over one foreign row, and the rest of that
-    // account's EUR history is still worth scoring.
+    // Here, not at the Zod boundary: one foreign row must not fail the walk.
     const eligible = page.filter((t) => isSupportedCurrency(t.currency));
     const skipped = page.length - eligible.length;
     for (const t of page) {
@@ -315,10 +305,8 @@ export class SyncService {
 
     /**
      * One page can carry the same id twice — the cursor is a positional offset
-     * into an unordered result set, so a shifting result set repeats rows. A
-     * multi-row `ON CONFLICT DO UPDATE` whose VALUES repeat a key raises
-     * `21000`, which fails the account walk and leaves it uncovered, so every
-     * later score refuses. Last occurrence wins.
+     * into an unordered set. A multi-row upsert repeating a key raises `21000`,
+     * which fails the walk and refuses every later score. Last occurrence wins.
      */
     const deduped = [...new Map(eligible.map((t) => [t.id, t])).values()];
 

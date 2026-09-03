@@ -4,9 +4,8 @@
 
 ## 1. Summary and motivation
 
-Traditional credit scoring needs a credit history. People who lack one — young,
-recently arrived, previously unbanked — are **thin-file**, and a normal
-scorecard has nothing to say about them.
+Traditional credit scoring needs a credit history, and a **thin-file**
+applicant has none ([who that is, and why it matters](scoring-model.md)).
 
 This service scores them from six months of bank transactions instead: it syncs
 a user's accounts and transactions from an external Banking API into local
@@ -415,7 +414,9 @@ already surface as metrics and as `data_quality` on the response.
 _Is the service healthy?_ Request duration and error rate, database timings,
 `banking.requests` and `banking.retries`, and the volume through each path —
 `sync.duration`, `sync.transactions`, `scoring.duration`, `scoring.scores`,
-`scoring.transfers_excluded`. Mostly automatic.
+`scoring.transfers_excluded`. Request and database timings come from the
+automatic instrumentation; the rest are declared in `telemetry/metrics.ts` and
+recorded by hand.
 
 _Is the service correct?_ A service can be fast, available and error-free while
 quietly refusing every score because sync has been failing. So:
@@ -605,7 +606,7 @@ than at 3am.
 | **Drizzle**           | Queries read like SQL, so what runs is what was written, and migrations are committed `.sql` that CI applies byte-identical.                                    | Prisma has better tooling, but its emitted SQL is not obvious. Smaller community.             |
 | **undici**            | Node's actual HTTP stack, so we get connection pooling, per-phase timeouts and a mock dispatcher for deterministic tests.                                       | Retry and backoff are hand-written — deliberately, since the classification is worth reading. |
 | **Vitest**            | Native ESM and TypeScript with no transform config; projects separate "no infrastructure" from "needs a database".                                              | A bundler in the test path that production does not use; a CI job smoke-tests the real build. |
-| **ESLint + Prettier** | Prettier ends formatting arguments. ESLint owns correctness, including the type-aware rule that blocks bare `fetch`.                                            | Biome is far faster but has no type-aware linting, which is where the value is.               |
+| **ESLint + Prettier** | Prettier ends formatting arguments. ESLint owns correctness, including type-aware rules and the syntactic one that blocks bare `fetch`.                         | Biome is far faster but has no type-aware linting, which is where the value is.               |
 | **OpenTelemetry**     | One trace context across handler, Banking API call and database query, and vendor-neutral across all three pillars.                                             | Dependency weight, and the SDK must be preloaded before anything it instruments.              |
 
 Two constraints worth knowing. **TypeScript is pinned to 6.0** because the

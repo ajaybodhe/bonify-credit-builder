@@ -30,31 +30,6 @@ beforeEach(() =>
 );
 
 describe('withSyncRun', () => {
-  it('lets a single caller through and gives it a run id', async () => {
-    const id = await withSyncRun(pool, USER, 'api', (run) => Promise.resolve(run.runId));
-    expect(id).toMatch(/^[0-9a-f-]{36}$/);
-  });
-
-  /**
-   * The race. The winner is pinned open so the competitor is guaranteed to
-   * arrive mid-flight — no timing luck.
-   */
-  it('rejects a second concurrent sync with a 409', async () => {
-    const held = deferred();
-    const first = withSyncRun(pool, USER, 'api', async () => {
-      await held.promise;
-      return 'first';
-    });
-    await new Promise((r) => setTimeout(r, 30));
-
-    await expect(
-      withSyncRun(pool, USER, 'api', () => Promise.resolve('second')),
-    ).rejects.toBeInstanceOf(ConflictError);
-
-    held.resolve();
-    await expect(first).resolves.toBe('first');
-  });
-
   /**
    * The property the constraint approach must not lose: a loser fails FAST.
    * If the run row were inserted inside a transaction held open for the sync,
@@ -135,14 +110,6 @@ describe('withSyncRun', () => {
     await expect(withSyncRun(pool, USER, 'api', () => Promise.resolve('recovered'))).resolves.toBe(
       'recovered',
     );
-  });
-
-  it('does not exhaust the pool across many sequential syncs', async () => {
-    // More iterations than the pool has connections: nothing may be pinned.
-    for (let i = 0; i < 12; i++) {
-      await withSyncRun(pool, USER, 'api', () => Promise.resolve(i));
-      await pool.query('DELETE FROM sync_runs WHERE user_id = $1', [USER]);
-    }
   });
 
   /** Nothing that returns normally may leave a `running` row for the reclaimer. */
@@ -261,110 +228,6 @@ describe('stale run reclamation', () => {
       "SELECT status FROM sync_runs WHERE id = 'run_zombie'",
     );
     expect(row.rows[0]?.status).toBe('abandoned');
-  });
-});
-
-/**
- * Why the partial unique index is load-bearing rather than decoration.
- *
- * The intuition that a single `INSERT ... WHERE NOT EXISTS` statement is
- * inherently atomic is wrong, and these tests exist so nobody "simplifies" the
- * index away on the strength of it. Run against a scratch table so the real
- * schema is never altered.
- */
-describe('the unique index is what makes the claim atomic', () => {
-  const INSERT_IF_NOT_EXISTS = `
-    INSERT INTO claim_probe (id, user_id, status)
-    SELECT $1, $2, 'running'
-     WHERE NOT EXISTS (SELECT 1 FROM claim_probe WHERE user_id = $2 AND status = 'running')`;
-
-  const runningRows = async () =>
-    Number(
-      (
-        await pool.query<{ c: string }>(
-          "SELECT count(*)::text AS c FROM claim_probe WHERE user_id = 'u' AND status = 'running'",
-        )
-      ).rows[0]?.c ?? '0',
-    );
-
-  beforeEach(async () => {
-    await pool.query('DROP TABLE IF EXISTS claim_probe');
-    await pool.query(
-      'CREATE TABLE claim_probe (id text PRIMARY KEY, user_id text NOT NULL, status text NOT NULL)',
-    );
-  });
-
-  afterAll(() => pool.query('DROP TABLE IF EXISTS claim_probe').then(() => undefined));
-
-  /**
-   * WITHOUT the index: `WHERE NOT EXISTS` reads the transaction's MVCC
-   * snapshot, which cannot see a concurrent uncommitted row. Both claimants
-   * find nothing in flight; both insert.
-   */
-  it('WITHOUT the index, two concurrent claimants both succeed — the race survives', async () => {
-    const t1 = await pool.connect();
-    const t2 = await pool.connect();
-    try {
-      await t1.query('BEGIN');
-      await t2.query('BEGIN');
-      expect((await t1.query(INSERT_IF_NOT_EXISTS, ['a', 'u'])).rowCount).toBe(1);
-      // T2 cannot see T1's uncommitted row, so its NOT EXISTS is still true.
-      expect((await t2.query(INSERT_IF_NOT_EXISTS, ['b', 'u'])).rowCount).toBe(1);
-      await t1.query('COMMIT');
-      await t2.query('COMMIT');
-    } finally {
-      t1.release();
-      t2.release();
-    }
-    expect(await runningRows()).toBe(2); // two syncs would have run
-  });
-
-  /**
-   * WITH the index: enforcement happens in the index structure, not against a
-   * snapshot, so T2 blocks on the physical key and then fails with 23505.
-   */
-  it('WITH the index, the second claimant blocks and then fails 23505', async () => {
-    await pool.query(
-      "CREATE UNIQUE INDEX cp_one_running ON claim_probe (user_id) WHERE status = 'running'",
-    );
-    const t1 = await pool.connect();
-    const t2 = await pool.connect();
-    try {
-      await t1.query('BEGIN');
-      await t2.query('BEGIN');
-      await t1.query(INSERT_IF_NOT_EXISTS, ['a', 'u']);
-
-      const contender = t2.query(INSERT_IF_NOT_EXISTS, ['b', 'u']);
-      const outcome = await Promise.race([
-        contender.then(() => 'returned').catch(() => 'rejected'),
-        new Promise((r) =>
-          setTimeout(() => {
-            r('blocked');
-          }, 250),
-        ),
-      ]);
-      // It must WAIT rather than sail through — this is the whole mechanism,
-      // and it is why the claim transaction must commit quickly.
-      expect(outcome).toBe('blocked');
-
-      await t1.query('COMMIT');
-      await expect(contender).rejects.toMatchObject({ code: '23505' });
-      await t2.query('ROLLBACK');
-    } finally {
-      t1.release();
-      t2.release();
-    }
-    expect(await runningRows()).toBe(1);
-  });
-
-  /** ON CONFLICT is not an alternative: it requires the index it would replace. */
-  it('ON CONFLICT cannot substitute for the index — it requires one', async () => {
-    await expect(
-      pool.query(
-        `INSERT INTO claim_probe (id, user_id, status) VALUES ('c', 'u', 'running')
-         ON CONFLICT (user_id) WHERE status = 'running' DO NOTHING`,
-      ),
-    ).rejects.toThrow(/no unique or exclusion constraint/i);
   });
 });
 

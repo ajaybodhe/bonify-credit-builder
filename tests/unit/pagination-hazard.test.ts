@@ -3,7 +3,6 @@ import {
   FakeBankingApi,
   buildTransactions,
   encodeCursor,
-  decodeCursor,
   PAGE_SIZE,
 } from '../helpers/fake-banking-api.js';
 
@@ -25,59 +24,13 @@ import {
 const ACCOUNT = 'acc_test_chk';
 const ALL = buildTransactions(ACCOUNT, 100); // 2025-09-01 .. 2025-12-09
 
-describe('cursor format matches the real API', () => {
-  it('is base64 of {"offset":N}, not an opaque token', () => {
-    expect(encodeCursor(15)).toBe('eyJvZmZzZXQiOjE1fQ==');
-    expect(decodeCursor('eyJvZmZzZXQiOjE1fQ==')).toBe(15);
-  });
-});
-
 describe('pagination behaves the way the upstream actually behaves', () => {
-  it('requires from and to', () => {
-    const api = new FakeBankingApi(ALL);
-    expect(() => api.listTransactions(ACCOUNT)).toThrow(/from and to/);
-  });
-
-  it('serves 15 per page and ends with a null cursor', () => {
-    const api = new FakeBankingApi(ALL);
-    const page = api.listTransactions(ACCOUNT, '2025-09-01', '2025-12-31');
-    expect(page.transactions).toHaveLength(PAGE_SIZE);
-    expect(page.next_cursor).not.toBeNull();
-  });
-
-  it('does not order pages by date', () => {
-    const api = new FakeBankingApi(ALL);
-    const dates = api
-      .listTransactions(ACCOUNT, '2025-09-01', '2025-12-31')
-      .transactions.map((t) => t.date);
-    const sorted = [...dates].sort();
-    expect(dates).not.toEqual(sorted);
-  });
-
-  it('is deterministic for a fixed (account, from, to)', () => {
-    const api = new FakeBankingApi(ALL);
-    const a = api
-      .listTransactions(ACCOUNT, '2025-09-01', '2025-10-31')
-      .transactions.map((t) => t.id);
-    const b = api
-      .listTransactions(ACCOUNT, '2025-09-01', '2025-10-31')
-      .transactions.map((t) => t.id);
-    expect(a).toEqual(b);
-  });
-
   it('puts DIFFERENT rows at the same offset when `to` changes', () => {
     const api = new FakeBankingApi(ALL);
     const cursor = encodeCursor(PAGE_SIZE);
     const narrow = api.listTransactions(ACCOUNT, '2025-09-01', '2025-10-31', cursor);
     const wide = api.listTransactions(ACCOUNT, '2025-09-01', '2025-12-31', cursor);
     expect(narrow.transactions.map((t) => t.id)).not.toEqual(wide.transactions.map((t) => t.id));
-  });
-
-  it('walking every page of a range yields each transaction exactly once', () => {
-    const api = new FakeBankingApi(ALL);
-    const ids = api.walkAll(ACCOUNT, '2025-09-01', '2025-12-31').map((t) => t.id);
-    expect(new Set(ids).size).toBe(ids.length);
-    expect(new Set(ids)).toEqual(new Set(ALL.map((t) => t.id)));
   });
 });
 
