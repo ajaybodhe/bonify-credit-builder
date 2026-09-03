@@ -7,72 +7,22 @@ import { AppError } from '../../lib/errors.js';
 import type pg from 'pg';
 
 /**
- * Resolves which merchant categories count as essential / high-risk.
- *
- * Why this is not just a call to the Banking API on every scoring request:
- *
- * 1. **Availability coupling.** Scoring is otherwise a pure, database-only
- *    read. Fetching the dictionary inline would make a credit decision fail
- *    because an unrelated upstream service is down — for data that changes
- *    perhaps monthly.
- * 2. **Latency.** A network round trip per score, for a payload measured in
- *    kilobytes and shared by every user.
- * 3. **Reproducibility.** If the dictionary can change between two scoring
- *    calls, two identical transaction sets can score differently with no record
- *    of why. Persisting it makes the dictionary part of the audited input.
- *
- * The strategy is therefore three-tiered, degrading rather than failing:
- *
- *   in-process cache (TTL)  →  `merchant_categories` table  →  Banking API
- *
- * A refresh failure is never fatal while a persisted copy exists; the scoring
- * response reports the dictionary's age so a stale one is visible rather than
- * silent.
- *
- * ## Versioning
- *
- * The dictionary is never overwritten. A refresh hashes what upstream returned
- * and compares it with the current version: identical, nothing happens;
- * different, a new version is written and the old one kept forever.
- *
- * That is what lets a score store `category_version` alone. Without it, a code
- * moving from `discretionary` to `essential` would silently change what every
- * earlier score meant — the numbers would stay, but the reason for them would
- * be gone. Old versions may never be deleted, for the same reason a released
- * model file may never be deleted.
+ * Refreshed by the sync path, read locally by scoring, never fetched inline. Never
+ * overwritten: a differing hash mints a new version and keeps the old one, which
+ * is what lets a score store `category_version` alone.
  */
 
-/** How long the in-process copy is trusted before revalidating against the DB. */
-/** Beyond this we still serve, but flag the dictionary as stale in the response. */
-
 export interface CategoryDictionary {
-  /**
-   * Identifies this exact mapping in `merchant_category_versions`.
-   *
-   * A score records this number and nothing else about categories — the
-   * mapping is never copied into the snapshot, exactly as the model is not.
-   */
   version: number;
-  /** Merchant category codes by group, straight from the upstream dictionary. */
   essential: readonly string[];
   highRisk: readonly string[];
   savings: readonly string[];
   income: readonly string[];
   fees: readonly string[];
-  /** When this dictionary was last successfully fetched from the Banking API. */
   fetchedAt: Date;
 }
 
 export class CategoryResolver {
-  /**
-   * Resolved dictionaries by version.
-   *
-   * Unbounded on purpose and safe: a version is immutable by construction — a
-   * changed dictionary mints a new row rather than updating one — and versions
-   * are minted at most once per upstream change, so this holds a handful of
-   * entries for the life of the process. Without it a single score reads the
-   * whole dictionary twice, once for scoring and once for data quality.
-   */
   private readonly byVersion = new Map<number, CategoryDictionary>();
 
   constructor(
@@ -80,19 +30,11 @@ export class CategoryResolver {
     private readonly banking: BankingApiClient,
   ) {}
 
-  /**
-   * Resolves one specific version from local storage. Never touches the
-   * network — this is the scoring path's only entry point, so a credit decision
-   * cannot inherit the Banking API's availability.
-   */
+  /** Local only: a credit decision cannot inherit the Banking API’s availability. */
   async forVersion(version: number, client?: pg.PoolClient): Promise<CategoryDictionary> {
     const cached = this.byVersion.get(version);
     if (cached) return cached;
 
-    // When the caller hands us their client we read on THEIR transaction, so
-    // this observes the same instant as every other read feeding the score.
-    // Version rows are immutable, so a separate handle would be benign today —
-    // but "every read sees one instant" should be true, not nearly true.
     if (client) return this.readVersionOn(client, version);
 
     const [row] = await this.db
@@ -114,7 +56,6 @@ export class CategoryResolver {
     return dictionary;
   }
 
-  /** The newest version held locally, or null if none has ever been fetched. */
   async currentVersion(): Promise<number | null> {
     const [row] = await this.db
       .select({ version: merchantCategoryVersions.version })
@@ -124,13 +65,6 @@ export class CategoryResolver {
     return row?.version ?? null;
   }
 
-  /**
-   * Called by the sync path, which is already talking to the Banking API.
-   *
-   * Mints a new version only when the content hash differs from the current
-   * one — upstream returning the same dictionary must not create a version, or
-   * the table grows once per sync and version numbers stop meaning anything.
-   */
   async refreshFromUpstream(now: Date = new Date()): Promise<CategoryDictionary> {
     const fetched = await this.banking.listMerchantCategories();
     const sorted = [...fetched].sort((a, b) => a.code.localeCompare(b.code));
@@ -145,8 +79,6 @@ export class CategoryResolver {
       .limit(1);
 
     if (current?.contentHash === hash) {
-      // Unchanged. Touch nothing — a new version here would be a lie about
-      // when the mapping last changed.
       return this.mustReadVersion(current.version, current.fetchedAt);
     }
 
@@ -168,7 +100,6 @@ export class CategoryResolver {
     return this.mustReadVersion(version, now);
   }
 
-  /** Reads one version on a caller-supplied client, joining their snapshot. */
   private async readVersionOn(client: pg.PoolClient, version: number): Promise<CategoryDictionary> {
     const { rows } = await client.query<{ code: string; group: string; fetched_at: Date }>(
       `SELECT c.code, c."group", v.fetched_at
@@ -198,7 +129,6 @@ export class CategoryResolver {
     return dictionary;
   }
 
-  /** One stored version, or null if it has no entries. */
   private async readVersion(version: number, fetchedAt: Date): Promise<CategoryDictionary | null> {
     const rows = await this.db
       .select()

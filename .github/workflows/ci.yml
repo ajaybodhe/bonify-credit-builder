@@ -118,9 +118,6 @@ jobs:
       # The Dockerfile is only a claim until something builds it. This job is
       # what makes "it containerises" a fact rather than a file in the repo.
       - run: docker build -t credit-builder:ci .
-      # And the runtime stage must be able to migrate: `db:migrate` needs tsx
-      # and src/, neither of which survives `npm ci --omit=dev`, so the image
-      # ships the compiled `db:migrate:prod` instead.
       # The whole stack, the way the README tells a reviewer to start it.
       - name: docker compose brings the service up and it answers
         run: |
@@ -132,13 +129,20 @@ jobs:
           curl -fsS http://localhost:3000/health
           docker compose down -v
 
+      # `db:migrate` needs tsx and src/, neither of which survives
+      # `npm ci --omit=dev`, so the image ships the compiled migrator instead.
+      # Reaching the DATABASE_URL check proves it and all its static imports
+      # resolve in the runtime image. It reports that by printing and exiting 1,
+      # not by rejecting, so assert on the exit code and stderr.
       - name: the runtime image can run migrations
         run: |
-          docker run --rm --entrypoint node credit-builder:ci \
-            -e "import('./dist/db/migrate.js').catch(e => {
-                  if (String(e).includes('DATABASE_URL')) process.exit(0);
-                  console.error(e); process.exit(1);
-                })"
+          if out=$(docker run --rm --entrypoint node credit-builder:ci \
+                     -e "import('./dist/db/migrate.js')" 2>&1); then
+            echo "Expected a non-zero exit with no DATABASE_URL set, got success."
+            exit 1
+          fi
+          echo "$out"
+          echo "$out" | grep -q DATABASE_URL
 
   build:
     name: build

@@ -74,9 +74,32 @@ const coverage = async () => {
   }
 };
 
+/** Fixture versions sit below other suites', which read the global maximum. */
+const FIXTURE_VERSION = 880401;
+async function seedDictionary(version: number) {
+  await pool.query(
+    `INSERT INTO merchant_category_versions (version, content_hash, fetched_at)
+     VALUES ($1, $2, now()) ON CONFLICT (version) DO NOTHING`,
+    [version, `cov_h${String(version)}`],
+  );
+  await pool.query(
+    `INSERT INTO merchant_categories (version, code, name, "group")
+     VALUES ($1, '5411', 'Groceries', 'essential') ON CONFLICT (version, code) DO NOTHING`,
+    [version],
+  );
+}
+
+const clearDictionaryFixture = async () => {
+  await pool.query('DELETE FROM merchant_categories WHERE version = $1', [FIXTURE_VERSION]);
+  await pool.query('DELETE FROM merchant_category_versions WHERE version = $1', [FIXTURE_VERSION]);
+};
+
+afterAll(clearDictionaryFixture);
+
 beforeEach(async () => {
   await pool.query('DELETE FROM sync_runs WHERE user_id = $1', [USER]);
   await pool.query('DELETE FROM accounts WHERE user_id = $1', [USER]);
+  await clearDictionaryFixture();
 });
 
 describe('assessCoverage', () => {
@@ -326,12 +349,50 @@ describe('the pinned category version comes from a covering run', () => {
     expect(c.category_version).toBe(7);
   });
 
-  it('is null when no covering run recorded one, so scoring can refuse', async () => {
+  /**
+   * The dictionary is global and carries no date range, so a covering run that
+   * recorded no version is not a reason to refuse while a usable mapping exists.
+   * Falls back to the newest stored, and flags that it did.
+   */
+  it('falls back to the newest stored version when the covering run recorded none', async () => {
     await account('acc_1');
     await run(['acc_1'], '2025-09-01', '2026-03-01', '2026-03-02T00:00:00Z', 'succeeded', null);
+    await seedDictionary(FIXTURE_VERSION);
+
     const c = await coverage();
     expect(c.complete).toBe(true);
-    expect(c.category_version).toBeNull();
+    expect(c.category_version).not.toBeNull();
+    expect(c.category_version_is_fallback).toBe(true);
+  });
+
+  /**
+   * The only unscoreable state. Emptying the dictionary table is destructive and
+   * these files run in parallel against one database, so it happens inside a
+   * transaction that is always rolled back.
+   */
+  it('is null only when no dictionary exists at all', async () => {
+    await account('acc_1');
+    await run(['acc_1'], '2025-09-01', '2026-03-01', '2026-03-02T00:00:00Z', 'succeeded', null);
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM merchant_categories');
+      await client.query('DELETE FROM merchant_category_versions');
+      const c = await assessCoverage(client, USER, WINDOW);
+      expect(c.complete).toBe(true);
+      expect(c.category_version).toBeNull();
+      expect(c.category_version_is_fallback).toBe(false);
+    } finally {
+      await client.query('ROLLBACK');
+      client.release();
+    }
+  });
+
+  it('does not flag a fallback when the covering run did record one', async () => {
+    await account('acc_1');
+    await run(['acc_1'], '2025-09-01', '2026-03-01', '2026-03-02T00:00:00Z', 'succeeded', 7);
+    expect((await coverage()).category_version_is_fallback).toBe(false);
   });
 
   it('ignores the version on a run that covers nothing relevant', async () => {

@@ -1,8 +1,3 @@
-/**
- * One error taxonomy for the whole service. Every thrown AppError maps to a
- * stable HTTP status and a machine-readable `code` that clients can branch on,
- * so the wire contract does not depend on message wording.
- */
 export type ErrorCode =
   | 'VALIDATION_ERROR'
   | 'USER_NOT_FOUND'
@@ -39,13 +34,7 @@ export class UpstreamError extends AppError {
   }
 }
 
-/**
- * The window is not fully covered by synced data, so we decline to score.
- *
- * `details` names the shortfall precisely — which accounts are short and by how
- * much — because the caller's remedy is mechanical (sync, then retry) and they
- * should not have to guess what to sync.
- */
+/** `details` names which accounts are short, so the caller need not guess. */
 export class SyncRequiredError extends AppError {
   constructor(message: string, details: unknown) {
     super('SYNC_REQUIRED', 409, message, details);

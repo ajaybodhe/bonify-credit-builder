@@ -17,9 +17,6 @@ export const syncRoutes: FastifyPluginAsyncZod = async (app) => {
           'content hash, so upstream amendments are detected rather than skipped. At most one ' +
           'sync runs per user at a time.',
         params: syncParamsSchema,
-        // Failure modes are part of the contract, not a comment. Declaring them
-        // means a generated client handles 409 and 502 instead of treating
-        // every non-200 as an unknown error.
         response: {
           200: syncResponseSchema,
           404: errorResponseSchema.describe('USER_NOT_FOUND — unknown to the Banking API'),

@@ -24,50 +24,24 @@ import {
 import { daysBetween } from '../../lib/date.js';
 import { AppError } from '../../lib/errors.js';
 
-/**
- * Orchestrates a scoring request: resolve the window, load the local
- * transactions for it, resolve essential/high-risk categories, run the pure
- * model, persist a snapshot, and shape the response.
- *
- * Deliberately thin. Anything that involves a decision about the score belongs
- * in scoring.ts, where it can be tested without a database.
- */
 export class ReliabilityService {
   constructor(
     private readonly db: Database,
-    /** Raw pool: the read snapshot needs a dedicated client, not the pooled ORM. */
     private readonly pool: pg.Pool,
     private readonly categories: CategoryResolver,
     private readonly dataQuality: DataQualityService,
   ) {}
 
   /**
-   * **No lock, unlike sync.** Scoring is idempotent and the model pure, so two
-   * simultaneous requests should produce the same score. What does need
-   * handling is subtler: all reads share one REPEATABLE READ snapshot, or a
-   * sync committing mid-request yields a plausible score whose `input_hash`
-   * describes a state that never existed; and two identical requests racing to
-   * insert the same snapshot is `ON CONFLICT DO NOTHING`, not an error.
-   *
-   * **Coverage is a gate, not a caveat.** Anything short of the full window for
-   * every account is `409 SYNC_REQUIRED` naming the gap — see `coverage.ts`.
-   *
-   * **It never triggers a sync.** Making a read write would give an
-   * unpredictable latency profile, race concurrent requests to sync one user,
-   * and couple credit decisions to upstream availability. Freshness is the
-   * caller's decision; `data_quality` reports what the history actually covers.
+   * No lock, unlike sync. What is needed instead is one REPEATABLE READ snapshot:
+   * a sync committing mid-request would yield a plausible score whose `input_hash`
+   * describes a state that never existed. Coverage is a gate, and this never
+   * triggers a sync — a credit decision must not inherit upstream availability.
    */
   async getReliability(userId: string, from: string): Promise<ReliabilityResponse> {
     const window = scoringWindow(from);
 
-    // Every read that feeds the score happens on THIS client, inside one MVCC
-    // snapshot. Collaborators are handed the client rather than using their own
-    // handle — a different handle would observe a different instant, which is
-    // exactly the read skew the snapshot prevents.
     const gathered = await withReadSnapshot(this.pool, async (client) => {
-      // The gate comes FIRST, before any transaction is loaded. Refusing early
-      // is cheaper and clearer: there is no half-built score to discard, and no
-      // later branch that could quietly score the partial set.
       const coverage = await assessCoverage(client, userId, window);
       try {
         requireCompleteCoverage(coverage, window);
@@ -88,20 +62,12 @@ export class ReliabilityService {
       );
 
       /**
-       * The provider reports ONE balance, undated, and it does not reconcile
-       * with the transactions it publishes: `acc_1001_chk` reads €2,450 while
-       * carrying +€8,749 of net inflow after the window closes. So the balance
-       * is a standalone figure, not the end state of the ledger.
-       *
-       * That rules out rolling it back over later movement. Doing so drives
-       * the account to −€14,712 and makes every day of the window negative —
-       * an artefact of arithmetic on two numbers that were never reconciled.
-       * Anchoring it at the window's end is the least-wrong reading available,
-       * and `negative_balance_days` is documented as an estimate because of it.
+       * The provider reports ONE undated balance that does not reconcile with the
+       * transactions it publishes: `acc_1001_chk` reads €2,450 while carrying +€8,749
+       * of net inflow after the window closes. Rolling it back over that movement
+       * drives it to −€14,712, so it is anchored at the window end and
+       * `negative_balance_days` is documented as an estimate.
        */
-      // One round trip: balance and type are both per-account columns, and the
-      // model needs both. Two queries here meant two scans and two round trips
-      // for the same rows.
       const { rows: accountRows } = await client.query<{
         id: string;
         type: string | null;
@@ -113,7 +79,6 @@ export class ReliabilityService {
         [userId],
       );
 
-      // Only for provenance on the snapshot: which run's data was scored.
       const { rows: lastRun } = await client.query<{ id: string }>(
         `SELECT id FROM sync_runs
           WHERE user_id = $1 AND status IN ('succeeded','partial')
@@ -121,26 +86,14 @@ export class ReliabilityService {
         [userId],
       );
 
-      /**
-       * Categories are PINNED to the sync, not resolved fresh.
-       *
-       * Transactions carry raw merchant category codes; the mapping from code
-       * to group is applied here, and it decides every scoring semantic.
-       * Resolving it at scoring time would interpret a synced dataset with a
-       * mapping it was never synced under — and would put an outbound call on
-       * the one path that must not have one, so that a credit decision never
-       * inherits the Banking API's availability.
-       */
-      // From the run that COVERS the window, not merely the newest run — see
-      // `assessCoverage`. Coverage composes across runs, so the two differ.
+      /** PINNED: resolving here reads data under a mapping it was never synced under. */
       const pinnedVersion = coverage.category_version;
       if (pinnedVersion === null) {
         throw new AppError(
           'CATEGORIES_UNAVAILABLE',
           503,
-          'The sync covering this window recorded no merchant category dictionary, so ' +
-            'the essential-category list is unknown and component C is undefined. ' +
-            'Re-sync to fetch one.',
+          'No merchant category dictionary has ever been fetched, so the essential-category ' +
+            'list is unknown and component C is undefined. Sync to fetch one.',
         );
       }
       const categories = await this.categories.forVersion(pinnedVersion, client);
@@ -161,9 +114,6 @@ export class ReliabilityService {
       };
     });
 
-    // Outside the snapshot, deliberately: the model is pure and needs no
-    // database, and the snapshot INSERT is a write that a READ ONLY
-    // transaction would reject.
     const accountTypes = new Map<string, AccountType>(
       gathered.accounts.map((a) => [a.id, a.type === 'savings' ? 'savings' : 'checking']),
     );
@@ -173,11 +123,7 @@ export class ReliabilityService {
       new Set(gathered.categories.savings),
     );
 
-    // Excludes I/O: this times the MODEL, so a regression in the arithmetic is
-    // not masked by a slow database.
     const modelStartedAt = performance.now();
-    // Named rather than inlined: the same map is scored, hashed and stored, and
-    // it must be the identical object in all three or the audit trail lies.
     const closingBalances = Object.fromEntries(
       gathered.accounts.map((a) => [a.id, a.balance ?? '0.00']),
     );
@@ -201,16 +147,7 @@ export class ReliabilityService {
       'category.version': String(gathered.categories.version),
     });
 
-    // Fairness instrumentation. A component that reads zero far more often for
-    // low-volume users is measuring how much of a life we can SEE, not how
-    // reliable that life is — the cohort label is what makes the difference
-    // visible. See docs/scoring-model.md.
     const cohort = volumeCohort(gathered.txns.length);
-    // Named explicitly rather than iterating `components`, which also holds
-    // `transfers_excluded_from_income` (a count, not a component, and usually
-    // 0), `net_savings` (a string, so never === 0), and a nested
-    // `resilience_breakdown` the old loop never looked inside. Scoring zero on
-    // resilience's savings term is exactly the signal this metric is for.
     const scored: Record<string, number> = {
       income_regularity: result.components.income_regularity_points,
       income_coverage: result.components.income_coverage_points,
@@ -241,8 +178,6 @@ export class ReliabilityService {
       closingBalances,
     );
 
-    // Concurrent identical requests both compute the same score and both try to
-    // insert it. One wins; the other is a no-op, not an error.
     await this.db
       .insert(scoreSnapshots)
       .values({
@@ -271,8 +206,6 @@ export class ReliabilityService {
       reliability_index: result.reliability_index,
       score_band: result.score_band,
       metrics: result.metrics,
-      // Data-quality caveats join the drivers so an analyst reading the
-      // explanation cannot miss them.
       drivers: [...result.drivers, ...gathered.dataQuality.warnings],
       data_quality: gathered.dataQuality,
       model_version: result.model_version,
@@ -280,10 +213,6 @@ export class ReliabilityService {
   }
 }
 
-/**
- * Buckets, not raw counts: the cohort is a metric label, and an unbounded label
- * is how a time-series database falls over.
- */
 function volumeCohort(transactionCount: number): string {
   if (transactionCount < 50) return 'lt50';
   if (transactionCount < 200) return '50-199';
@@ -291,12 +220,6 @@ function volumeCohort(transactionCount: number): string {
   return 'gte500';
 }
 
-/**
- * A refusal is the service working as designed, but a RISING refusal rate is
- * the single most important signal it emits: users are asking for scores the
- * sync pipeline cannot support. Attributed by reason so the cause is visible
- * without a query.
- */
 function recordRefusal(coverage: Coverage, window: ScoringWindow): void {
   if (coverage.accounts_total === 0) {
     scoringRefusedTotal.add(1, { reason: 'never_synced' });
@@ -304,8 +227,6 @@ function recordRefusal(coverage: Coverage, window: ScoringWindow): void {
   }
   for (const gap of coverage.gaps) scoringRefusedTotal.add(1, { reason: gap.reason });
 
-  // How far short, in days — "the sync is an hour behind" and "we have never
-  // fetched this window" both refuse, but they need different responses.
   const shortfall = coverage.covers_through
     ? Math.max(0, daysBetween(coverage.covers_through, window.end))
     : daysBetween(window.start, window.end);

@@ -122,12 +122,12 @@ the provider's published `data_range` (§4.5).
 
 **`GET /api/users/{userId}/reliability?from=YYYY-MM-DD`**
 
-| Status | Meaning                                                                      |
-| ------ | ---------------------------------------------------------------------------- |
-| `200`  | Score, band, metrics, drivers, data quality, model version                   |
-| `400`  | `VALIDATION_ERROR` — `from` missing or not a real calendar date              |
-| `409`  | `SYNC_REQUIRED` — coverage incomplete; details name the gap per account      |
-| `503`  | `CATEGORIES_UNAVAILABLE` — the covering sync recorded no category dictionary |
+| Status | Meaning                                                                 |
+| ------ | ----------------------------------------------------------------------- |
+| `200`  | Score, band, metrics, drivers, data quality, model version              |
+| `400`  | `VALIDATION_ERROR` — `from` missing or not a real calendar date         |
+| `409`  | `SYNC_REQUIRED` — coverage incomplete; details name the gap per account |
+| `503`  | `CATEGORIES_UNAVAILABLE` — no category dictionary has ever been fetched |
 
 Every error shares one shape, always with a request id:
 
@@ -171,7 +171,7 @@ flowchart TD
 
     subgraph io["I/O"]
         CV["Coverage check<br/>can we score at all?"]
-        CAT["Category resolver<br/>local only, at the run's pinned version"]
+        CAT["Category resolver<br/>local only, at the recorded version"]
         BC["Banking client<br/>typed façade, streamed pagination"]
         BH["HTTP client<br/>the only outbound HTTP"]
         DBL["Persistence<br/>schema + connection pool"]
@@ -385,15 +385,15 @@ next time.
 
 **Sync/scoring edge cases**, the ones worth knowing:
 
-| Case                                           | Behaviour                                                                                                                                  |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| Never synced, or last sync partial             | `409 SYNC_REQUIRED`. Never 0/LOW — absence of data is not evidence of unreliability.                                                       |
-| Sync in flight while scoring                   | Served from committed data if that already covers the window; never waited for.                                                            |
-| Backdated transaction after a score was served | The old snapshot stays valid for what it saw; a new score has a different `input_hash`. That is the audit trail working.                   |
-| Banking API down during scoring                | Non-event. Scoring makes no outbound call at all: categories are read locally at the version the covering sync pinned.                     |
-| `from` in the future                           | Accepted; coverage will not extend that far, so it refuses.                                                                                |
-| Own-account transfer                           | Reclassified by account type and category group: into savings is saving, out of savings is dis-saving, same-type is ignored. Never income. |
-| Account removed upstream · non-EUR transaction | **Not handled** — see non-goals.                                                                                                           |
+| Case                                           | Behaviour                                                                                                                                                                                                                                                                                                    |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Never synced, or last sync partial             | `409 SYNC_REQUIRED`. Never 0/LOW — absence of data is not evidence of unreliability.                                                                                                                                                                                                                         |
+| Sync in flight while scoring                   | Served from committed data if that already covers the window; never waited for.                                                                                                                                                                                                                              |
+| Backdated transaction after a score was served | The old snapshot stays valid for what it saw; a new score has a different `input_hash`. That is the audit trail working.                                                                                                                                                                                     |
+| Banking API down during scoring                | Non-event. Scoring makes no outbound call at all: categories are read locally at the version the covering sync recorded, or the newest stored if it recorded none.                                                                                                                                           |
+| `from` in the future                           | Accepted; coverage will not extend that far, so it refuses.                                                                                                                                                                                                                                                  |
+| Own-account transfer                           | Reclassified by account type and category group: into savings is saving, out of savings is dis-saving, same-type is ignored. Never income **where the data identifies it**. A transfer from the user's own account at another bank does not, and counts as income; see [scoring-model.md](scoring-model.md). |
+| Account removed upstream · non-EUR transaction | **Not handled** — see non-goals.                                                                                                                                                                                                                                                                             |
 
 ### 4.7 Observability
 
@@ -553,7 +553,7 @@ sequenceDiagram
     R->>DB: SELECT balance per account
 
     R->>CAT: resolve categories AT THE RUN'S PINNED VERSION
-    Note over CAT: local only — never the Banking API.<br/>Run recorded no version = 503
+    Note over CAT: local only — never the Banking API.<br/>No version recorded = use newest, warn<br/>No dictionary at all = 503
     CAT-->>R: essential, high_risk, savings, income, fees
 
     R->>TX: COMMIT

@@ -91,6 +91,31 @@ outscore someone with identical finances who does not.
 The trade-off is that a simpler rule, counting every credit as income, would
 score those users higher.
 
+**How a transfer is identified, given no linkage.** The API offers no way to
+link the two sides of a transfer — a transaction carries no counterparty, no
+transfer id, no reference to another row. That mostly does not matter, because
+there is usually no second side: this provider reports an internal transfer as a
+single credit on the receiving account.
+
+So identification does not use linkage. It uses two things the row carries on its
+own: **where the money landed** — the account's `type`, known because the account
+list came from this user — and **how the provider labelled it**, the merchant
+category group. Either is enough on its own.
+
+**There is deliberately no fallback that guesses.** Matching two legs by equal
+amount and nearby date was tried and removed: it assumes a provider that emits
+both sides, which this one does not and a future one might not either — it could
+just as well expose a transfer id or a counterparty, and we would be matching on
+coincidence instead. The failure is also one-directional: two unrelated payments
+of the same amount on the same day would be silently erased from income. Against
+this provider it matched nothing, so it was pure risk.
+
+So a transfer is excluded when the data says so, and counted as income when it
+does not. The case that falls through is a transfer from the user's own account
+**at another bank**: it lands in checking, carries no savings code, and its other
+leg is not in our data at all. It counts as income — the one case where this rule
+silently overstates, and the reason to widen the input rather than the model.
+
 ---
 
 ## Income coverage ratio — 0 to 25 points
@@ -140,9 +165,23 @@ A category-month counts if at least one transaction in that essential category
 falls in that month.
 
 The essential list comes from the merchant-category dictionary **at the version
-the covering sync pinned**, never hardcoded and never fetched at scoring time. An
-upstream category addition would otherwise change the denominator and shift every
-score silently.
+the covering sync recorded**, never hardcoded and never fetched at scoring time.
+An upstream category addition would otherwise change the denominator and shift
+every score silently.
+
+**What pinning does and does not mean.** The dictionary is one global artefact —
+a code-to-group mapping, versioned whenever its content changes, with no date
+range attached to any version. So a pin records _which mapping produced this
+score_, which is what keeps the score reproducible. It is **not** a claim that
+those categories were the ones in force across the transaction window; nothing
+upstream expresses that, and a code's group does not depend on when it was
+fetched.
+
+That is also why a missing pin is not a refusal. If the covering sync recorded no
+version — a first sync whose category refresh failed leaves one behind — scoring
+uses the current dictionary and says so in `data_quality`, rather than refusing
+while a perfectly usable mapping sits in the database. Only a service that has
+never fetched a dictionary at all cannot score.
 
 _Example._ Four essential categories over six months = 24 possible
 category-months. Rent and groceries appear in all six, utilities in five,

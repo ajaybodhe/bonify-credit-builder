@@ -32,9 +32,10 @@ export const reliabilityRoutes: FastifyPluginAsyncZod = async (app) => {
               '`details` names the gap per account. Sync, then retry.',
           ),
           503: errorResponseSchema.describe(
-            'CATEGORIES_UNAVAILABLE — no cached category dictionary and the Banking API is ' +
-              'unreachable. Component C is undefined without it, and guessing would produce a ' +
-              'confident wrong score.',
+            'CATEGORIES_UNAVAILABLE — no merchant category dictionary has ever been fetched. ' +
+              'Component C is undefined without it, and guessing would produce a confident ' +
+              'wrong score. Scoring never calls the Banking API, so this is decided from ' +
+              'local state alone: sync to fetch one.',
           ),
         },
       },

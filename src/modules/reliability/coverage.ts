@@ -3,55 +3,25 @@ import { SyncRequiredError } from '../../lib/errors.js';
 import type { ScoringWindow } from '../../lib/date.js';
 
 /**
- * Does synced data completely cover the requested window?
- *
- * **Score only on complete data.** Any gap, however small, is a refusal — 99%
- * is not scored. A reliability index is a six-month statement about a person;
- * computing it over five and a half and labelling the difference in a side
- * field produces a number that looks authoritative and is not. There is no
- * threshold to argue about because a threshold is what invites arguing.
- *
- * Coverage is derived from `sync_runs`, not per-account checkpoints: every run
- * re-walks the same range for every account, so per-account state would hold
- * identical values and serve no resume purpose. A run qualifies when
- *
- *   1. `synced_from <= window.start`     — it asked far enough back
- *   2. `covers_through >= window.end`    — it asked far enough forward
- *   3. `started_at::date >= window.end`  — it looked no earlier than the
- *                                          window's last day
- *
- * Condition 3 is the one that is easy to miss: `covers_through` is what we
- * ASKED for, and `to` may be in the future — the provider publishes into 2027 —
- * so a run that began in January cannot have seen a February transaction. `>=`
- * rather than `>` so a window ending today is scoreable after a sync today;
- * that run saw only part of the final day, which coverage reports rather than
- * hides.
- *
- * The user is covered when the union of `covered_account_ids` across qualifying
- * runs includes every account they hold — so two partial runs covering
- * different accounts add up.
+ * Does synced data completely cover the requested window? Any gap is a refusal:
+ * 99% is not scored, because six months computed over five and a half looks
+ * authoritative and is not.
+ * A run qualifies when it asked far enough back, far enough forward, AND started
+ * no earlier than the window's last day — `to` may be in the future, so a January
+ * run cannot have seen a February transaction.
  */
 
 export type GapReason =
-  /** No run ever walked this account to completion. */
   | 'never_synced'
-  /** Runs that covered it did not reach far enough back. */
   | 'starts_too_late'
-  /** Runs that covered it did not reach far enough forward. */
   | 'ends_too_early'
   | 'both_ends_short'
-  /**
-   * The range was requested, but every run that covered this account began
-   * before the window closed — so it cannot have seen the later part.
-   */
   | 'synced_before_window_end';
 
 export interface CoverageGap {
   account_id: string;
-  /** Widest range any completed run fetched for this account, if any. */
   covered_from: string | null;
   covered_through: string | null;
-  /** When the most recent run covering it began — the bound on what it saw. */
   last_synced_at: string | null;
   reason: GapReason;
 }
@@ -59,25 +29,16 @@ export interface CoverageGap {
 export interface Coverage {
   accounts_total: number;
   accounts_covering: number;
-  /**
-   * Merchant category dictionary version recorded by the newest run that
-   * actually covers the window. Null when no covering run recorded one, which
-   * scoring reports as `CATEGORIES_UNAVAILABLE`.
-   */
   category_version: number | null;
-  /**
-   * Coverage rests on a run that started on the window's last day, so that day
-   * may be incomplete. Reported to the caller, never a reason to refuse.
-   */
+  category_version_is_fallback: boolean;
+  /** The window’s last day may be incomplete. Reported, never a refusal. */
   observed_same_day: boolean;
-  /** Range every account is confirmed to cover — the intersection, not the union. */
   covers_from: string | null;
   covers_through: string | null;
   gaps: CoverageGap[];
   complete: boolean;
 }
 
-/** Widest range and latest look across the runs that walked one account. */
 interface AccountFacts {
   from: string | null;
   through: string | null;
@@ -95,10 +56,6 @@ function reasonFor(facts: AccountFacts | undefined, window: ScoringWindow): GapR
   return 'synced_before_window_end';
 }
 
-/**
- * Reads on the caller's client so this joins their MVCC snapshot — coverage and
- * the transactions it describes must be observed at one instant.
- */
 export async function assessCoverage(
   client: pg.PoolClient,
   userId: string,
@@ -109,14 +66,6 @@ export async function assessCoverage(
     [userId],
   );
 
-  /**
-   * Aggregated in Postgres, one row per account — not one per run.
-   *
-   * The naive form fetches every run the user has ever had and folds them in
-   * JS. With hourly syncs that is tens of thousands of rows per scoring
-   * request, each carrying a `jsonb` array, to produce a handful of dates.
-   * `bool_or` and an ordered `array_agg` do the same fold where the data is.
-   */
   const facts = new Map<string, AccountFacts>();
   const covered = new Set<string>();
 
@@ -169,11 +118,8 @@ export async function assessCoverage(
     });
   }
 
-  /**
-   * The dictionary version to score with: from a run that actually establishes
-   * coverage, not simply the newest run. One indexed row, not a scan folded in
-   * memory.
-   */
+  // The covering run's version, else the newest: the dictionary is global with no
+  // date dimension, so a missing pin must not refuse a score. The caller is told.
   const pinned = await client.query<{ category_version: number }>(
     `SELECT category_version
        FROM sync_runs
@@ -188,7 +134,16 @@ export async function assessCoverage(
       LIMIT 1`,
     [userId, window.start, window.end],
   );
-  const pinnedCategoryVersion = pinned.rows[0]?.category_version ?? null;
+
+  let pinnedCategoryVersion = pinned.rows[0]?.category_version ?? null;
+  let categoryVersionIsFallback = false;
+  if (pinnedCategoryVersion === null) {
+    const newest = await client.query<{ version: number }>(
+      'SELECT version FROM merchant_category_versions ORDER BY version DESC LIMIT 1',
+    );
+    pinnedCategoryVersion = newest.rows[0]?.version ?? null;
+    categoryVersionIsFallback = pinnedCategoryVersion !== null;
+  }
 
   const gaps: CoverageGap[] = [];
   for (const { id } of accounts.rows) {
@@ -203,14 +158,7 @@ export async function assessCoverage(
     });
   }
 
-  // The range we can vouch for is what EVERY account has — the intersection, so
-  // `max(from)` and `min(through)`. One account fetched only from January limits
-  // the whole user to January, however far back the others reach.
-  //
-  // Reported whether or not coverage is complete: it is most useful in the
-  // refusal, where it tells the caller what they actually have. Null only when
-  // some account has never been fetched at all, because then the intersection
-  // genuinely is empty.
+  // The intersection: one account fetched only from January limits the whole user.
   const all = accounts.rows.map((a) => facts.get(a.id));
   const known = all.filter((f): f is AccountFacts => f !== undefined);
   const everyAccountFetched = known.length === accounts.rows.length && accounts.rows.length > 0;
@@ -221,18 +169,17 @@ export async function assessCoverage(
     accounts_total: accounts.rows.length,
     accounts_covering: accounts.rows.length - gaps.length,
     category_version: pinnedCategoryVersion,
+    category_version_is_fallback: categoryVersionIsFallback,
     observed_same_day: sameDayObservation,
     covers_from:
       everyAccountFetched && froms.length ? froms.reduce((a, b) => (a > b ? a : b)) : null,
     covers_through:
       everyAccountFetched && throughs.length ? throughs.reduce((a, b) => (a < b ? a : b)) : null,
     gaps,
-    // A user with no accounts is NOT covered: nothing was ever synced for them.
     complete: accounts.rows.length > 0 && gaps.length === 0,
   };
 }
 
-/** Throws `SyncRequiredError` unless every account fully spans the window. */
 export function requireCompleteCoverage(coverage: Coverage, window: ScoringWindow): void {
   if (coverage.complete) return;
 

@@ -30,10 +30,10 @@
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "prepare": "husky || true",
-    "test:integration": "vitest run --project integration",
-    "test:e2e": "vitest run --project e2e",
-    "test:contract": "vitest run --project contract",
-    "test:all": "vitest run --project unit --project integration --project e2e"
+    "test:integration": "node --env-file-if-exists=.env ./node_modules/.bin/vitest run --project integration",
+    "test:e2e": "node --env-file-if-exists=.env ./node_modules/.bin/vitest run --project e2e",
+    "test:contract": "node --env-file-if-exists=.env ./node_modules/.bin/vitest run --project contract",
+    "test:all": "node --env-file-if-exists=.env ./node_modules/.bin/vitest run --project unit --project integration --project e2e"
   },
   "dependencies": {
     "@fastify/helmet": "^13.1.1",

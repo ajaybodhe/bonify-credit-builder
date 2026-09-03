@@ -10,12 +10,11 @@ import type { CategoryResolver } from '../reliability/categories.js';
 import { SYNC_DEADLINE_MS, withSyncRun } from './claim.js';
 import type { Logger } from '../../lib/logger.js';
 
-/** Postgres unique violation: a concurrent run already minted this version. */
 function isUniqueViolation(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === '23505';
 }
 
-/** Coarse buckets — never the message, which can carry account identifiers. */
+// Coarse buckets — never the message, which can carry account ids.
 function classifyFailure(err: unknown): string {
   const status = (err as { details?: { status?: unknown } } | null)?.details?.status;
   if (typeof status === 'number') return `http_${String(Math.floor(status / 100))}xx`;
@@ -34,26 +33,14 @@ import {
 import type { SyncResponse } from './schemas.js';
 
 /**
- * Pulls accounts and transactions for one user into the local store.
- *
- * The reasoning lives in docs/architecture-design.md §4.4–4.6; the invariants
- * this class must uphold are:
- *
- * 1. **Idempotent without assuming immutability.** Dedupe is a PK conflict
- *    resolved by comparing `content_hash`, not `DO NOTHING` — banks amend
- *    routinely, and ignoring a conflict leaves the mirror invisibly wrong.
- * 2. **Re-read accounts AND transactions in full every run.** The account list
- *    comes from the API, never the mirror, and every mutable field is written
- *    back — a stale `type` misclassifies transfers. Amendments are only
- *    detectable on rows actually re-read, so there is no incremental mode.
- * 3. **Commit per page, never per user.** A crash on page 40 keeps pages 1-39.
- * 4. **Only accounts walked to completion go in `covered_account_ids`.** Pages
- *    are shuffled with respect to date, so a partial walk proves nothing — and
- *    that list is the whole of coverage accounting.
- * 5. **Record the run whatever happens**, so "was Tuesday's score computed on
- *    good data?" stays answerable. Terminal status is reached exactly once.
- * 6. **Refresh the category dictionary here**, not on the scoring path.
- * 7. **Peak memory is one page**, regardless of history length.
+ * Pulls one user's accounts and transactions into the local store. Invariants,
+ * reasoned through in docs/architecture-design.md §4.4-4.6:
+ * 1. Dedupe compares `content_hash` rather than DO NOTHING — banks amend.
+ * 2. Both are re-read in full every run; no incremental mode, because an
+ *    amendment only shows up on a row re-read.
+ * 3. Commit per page: a crash on page 40 keeps pages 1-39.
+ * 4. Only accounts walked to completion go in `covered_account_ids`.
+ * 5. Record the run whatever happens.
  */
 export class SyncService {
   constructor(
@@ -61,51 +48,20 @@ export class SyncService {
     private readonly banking: BankingApiClient,
     private readonly pool: pg.Pool,
     private readonly categories: CategoryResolver,
-    /**
-     * Structured logger. Without one a per-account failure is a number in a
-     * response body and nothing else — an account failing every night looks
-     * identical to a healthy sync with one fewer account.
-     */
     private readonly log: Logger,
-    /** Overridable so a scheduled sync can allow itself a longer budget. */
     private readonly deadlineMs: number = SYNC_DEADLINE_MS,
   ) {}
 
-  /**
-   * Concurrent calls for the same user do not queue — the second gets an
-   * immediate 409. Different users sync concurrently; the lock is per user.
-   */
-  /**
-   * The range is not a parameter. A sync covers the whole span the Banking API
-   * publishes in its `data_range`, because there is no account-opened date to
-   * ask for and no principled smaller bound: anything narrower would leave
-   * windows unscoreable with no way to ask for them.
-   */
+  /** A second concurrent call gets a 409. The range covers the whole `data_range`. */
   async syncUser(userId: string): Promise<SyncResponse> {
     const startedAt = Date.now();
     try {
-      // `withSyncRun` reclaims any crashed run, INSERTs this one, and commits —
-      // all in one short transaction, so nothing is pinned while we talk to the
-      // Banking API. The partial unique index admits exactly one claimant; a
-      // loser gets a 409 in about a millisecond rather than waiting.
       return await withSyncRun(
         this.pool,
         userId,
         'api',
         async (run) => {
-          // Both halves are re-read in full on every run: the account list from
-          // the API (never from the local mirror), and then every account's whole
-          // transaction range. Neither is incremental — see the class notes.
-          /**
-           * The deadline as a signal, not just a check between pages.
-           *
-           * Checking at page boundaries bounds the gaps between requests but
-           * not a request itself: one page can consume the whole retry budget,
-           * and `listAccounts` runs before the first check at all. Handing the
-           * banking client a signal makes the deadline apply INSIDE the call,
-           * which is what the reclaim rule assumes when it treats a live run as
-           * always stopping before its slot is taken.
-           */
+          // A signal, not a page-boundary check: one page can consume the whole retry budget.
           const abort = new AbortController();
           const deadlineTimer = setTimeout(
             () => {
@@ -113,7 +69,6 @@ export class SyncService {
             },
             Math.max(0, this.deadlineMs - run.elapsedMs()),
           );
-          // Never keep the process alive just to fire a cancellation.
           deadlineTimer.unref();
 
           try {
@@ -133,10 +88,6 @@ export class SyncService {
                   lastSyncedAt: new Date(),
                 })),
               )
-              // Every mutable field is written back, not just the balance. `type` in
-              // particular drives transfer classification — a stale one would make
-              // a savings account look like a current account and quietly
-              // misclassify every transfer into it.
               .onConflictDoUpdate({
                 target: schema.accounts.id,
                 set: {
@@ -152,16 +103,10 @@ export class SyncService {
             const covered: string[] = [];
             let failed = 0;
             let timedOut = false;
-            // Per RUN, never on `this`. SyncService is constructed once for the app
-            // and shared by every request, so instance state here would let one
-            // user's failure be written into another user's audit row.
+            // Per RUN: the service is shared, so instance state would leak across users.
             let lastError: string | undefined;
 
             for (const account of accounts) {
-              // An upstream sick enough to push us past the deadline is one to back
-              // away from, not to keep hammering. Stop, keep what committed, and
-              // let the next sync pick up the rest — every run re-reads the whole
-              // range anyway, so nothing is lost by stopping early.
               if (run.isPastDeadline()) {
                 timedOut = true;
                 break;
@@ -172,8 +117,6 @@ export class SyncService {
                   range,
                   abort.signal,
                 )) {
-                  // One transaction per page, not one for the whole user: a crash
-                  // on page 40 keeps pages 1-39.
                   const counts = await this.writePage(page, userId, run.runId);
                   totals.fresh += counts.fresh;
                   totals.duplicate += counts.duplicate;
@@ -184,9 +127,7 @@ export class SyncService {
                     break;
                   }
                 }
-                // Listed only after the walk reached a null cursor. A partial walk
-                // is a random subset of the range, so it proves nothing — and a walk
-                // cut short by the deadline is exactly that.
+                // Invariant 4: a walk cut short by the deadline is a partial walk.
                 if (!timedOut) covered.push(account.id);
               } catch (err) {
                 failed += 1;
@@ -199,8 +140,6 @@ export class SyncService {
               }
             }
 
-            // Every account we never finished counts as failed, so coverage and the
-            // response agree with each other.
             if (timedOut) {
               failed = accounts.length - covered.length;
               lastError =
@@ -208,16 +147,9 @@ export class SyncService {
                 `passed with the Banking API still responding slowly. Retry later.`;
             }
 
-            // Refreshed here, not on the scoring path: this code is already talking
-            // to the Banking API and scoring should not have to.
             try {
               await this.categories.refreshFromUpstream();
             } catch (err) {
-              // A concurrent sync minting the same next version loses on the
-              // primary key. That is benign — the other run stored the same
-              // dictionary — but it must not look the same as an upstream that
-              // has started returning garbage, which is why it is classified
-              // rather than swallowed.
               const lost = isUniqueViolation(err);
               this.log[lost ? 'debug' : 'warn'](
                 { err, userId },
@@ -227,9 +159,6 @@ export class SyncService {
               );
               categoryRefreshFailures.add(1, { reason: lost ? 'lost_race' : 'upstream' });
             }
-            // Recorded whether or not that refresh succeeded: what scoring needs
-            // is the version in force when this run finished, which is the newest
-            // one held locally either way.
             const categoryVersion = await this.categories.currentVersion();
 
             const status = failed === 0 ? 'succeeded' : 'partial';
@@ -239,9 +168,6 @@ export class SyncService {
             syncTransactionsTotal.add(totals.fresh, { outcome: 'new' });
             syncTransactionsTotal.add(totals.duplicate, { outcome: 'duplicate' });
             syncTransactionsTotal.add(totals.amended, { outcome: 'amended' });
-            // Separate from the `amended` outcome above deliberately: this one is
-            // an alarm, not an accounting line. Non-zero means upstream mutated
-            // rows we had already stored.
             if (totals.amended > 0) transactionAmendmentsTotal.add(totals.amended);
 
             await run.finish(status, {
@@ -289,14 +215,8 @@ export class SyncService {
       );
     } catch (err) {
       if (err instanceof ConflictError) {
-        // Contention is expected traffic, not an incident — but a client stuck
-        // in a retry loop is invisible without this. A rejected attempt never
-        // ran, so it is NOT counted in syncRunsTotal.
         syncConflictsTotal.add(1, { 'user.id': userId });
       } else {
-        // The run threw: `withSyncRun` has already driven the row to `failed`,
-        // but the success path's counter never fired, so record it here or the
-        // failure rate silently reads as zero.
         syncRunsTotal.add(1, { status: 'failed' });
         syncDuration.record((Date.now() - startedAt) / 1000, { status: 'failed' });
       }
@@ -304,14 +224,6 @@ export class SyncService {
     }
   }
 
-  /**
-   * Writes one page, resolving conflicts by content hash rather than ignoring
-   * them, and archiving the prior row whenever the hash moves.
-   *
-   * Returns the split between genuinely new rows, unchanged duplicates, and
-   * upstream amendments — which is what makes an amendment visible instead of
-   * silent.
-   */
   private async writePage(
     page: readonly BankingTransaction[],
     userId: string,
@@ -329,15 +241,12 @@ export class SyncService {
       description: t.description ?? null,
       merchant: t.merchant_name ?? null,
       category: t.merchant_category_code ?? null,
-      // The API states the direction explicitly and also encodes it in the
-      // sign. Trust `type`, and let the sign disagree loudly if it ever does.
+      // Trust `type`; let the sign disagree loudly if it ever does.
       isCredit: t.type === 'credit',
       contentHash: contentHashOf(t),
     }));
 
     return this.db.transaction(async (tx) => {
-      // Archive the prior state of every row whose content actually changed,
-      // BEFORE overwriting it.
       await tx.execute(sql`
         INSERT INTO transaction_revisions
           (id, transaction_id, revision, content_hash, previous,
@@ -394,10 +303,8 @@ export class SyncService {
 }
 
 /**
- * Digest of the fields a score depends on.
- *
- * Deliberately excludes `description`: upstream enriches merchant descriptors
- * without changing what the transaction means, and treating that as an
+ * Digest of the fields a score depends on. Excludes `description`: upstream
+ * enriches descriptors without changing meaning, and treating that as an
  * amendment would bury real changes in noise.
  */
 function contentHashOf(t: BankingTransaction): string {

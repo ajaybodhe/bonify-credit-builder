@@ -2,10 +2,6 @@ import { sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 
-/**
- * /health is liveness (is the process up), /ready is readiness (can it serve).
- * Separating them stops a transient database blip from getting the pod killed.
- */
 export const healthRoutes: FastifyPluginAsyncZod = async (app) => {
   app.get(
     '/health',

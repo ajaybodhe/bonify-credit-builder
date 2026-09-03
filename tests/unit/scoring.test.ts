@@ -118,19 +118,6 @@ describe('interpolate — income coverage curve', () => {
   });
 });
 
-/**
- * Coverage checks. The window START is the dangerous end: unfetched months look
- * like months with no income, so the applicant is scored down for our gap.
- */
-/**
- * `good_months` was in the response contract with no definition behind it.
- * MODEL.goodMonth now defines it; these pin that definition.
- */
-describe('good_months', () => {
-  it.todo('a month with income but no essential payment is not good');
-  it.todo('a month with a fee event is not good even if otherwise complete');
-});
-
 describe('computeReliabilityIndex', () => {
   const WINDOW: ScoringWindow = {
     start: '2025-09-01',
@@ -315,11 +302,50 @@ describe('computeReliabilityIndex', () => {
     expect(fined.reliability_index).toBeLessThanOrEqual(clean.reliability_index);
   });
 
+  /**
+   * A good month needs ALL THREE of income, an essential payment, and no fee.
+   * `steady()` satisfies all three in all six months, so each case below breaks
+   * exactly one condition in exactly one month and expects five.
+   */
+  it('a month with no income is not good', () => {
+    const noSeptemberIncome = steady().filter((t) => t.bookedAt !== '2025-09-01');
+    expect(run(noSeptemberIncome).metrics.good_months).toBe(5);
+  });
+
+  it('a month with income but no essential payment is not good', () => {
+    const noSeptemberEssentials = steady().filter(
+      (t) => t.bookedAt !== '2025-09-05' && t.bookedAt !== '2025-09-09',
+    );
+    expect(run(noSeptemberEssentials).metrics.good_months).toBe(5);
+  });
+
+  it('a month with a fee event is not good even if otherwise complete', () => {
+    const fined = [...steady(), txn('2026-01-20', '-12.00', '6012')];
+    expect(run(fined).metrics.good_months).toBe(5);
+  });
+
+  /**
+   * Two fee events either way, so the fee count — and with it every component —
+   * is identical; only WHICH months carry them differs. Breaking any condition
+   * outright would move a component too, since all three feed A, C or D.
+   */
   it('good_months is reported but never scored', () => {
-    // Same transactions, one month stripped of its essential payment: good_months
-    // must move without the index moving for that reason alone.
-    const r = run(steady());
-    expect(r.metrics.good_months).toBeLessThanOrEqual(WINDOW.months.length);
+    const oneBadMonth = run([
+      ...steady(),
+      txn('2026-01-20', '-12.00', '6012'),
+      txn('2026-01-21', '-12.00', '6012'),
+    ]);
+    const twoBadMonths = run([
+      ...steady(),
+      txn('2026-01-20', '-12.00', '6012'),
+      txn('2025-12-21', '-12.00', '6012'),
+    ]);
+
+    expect(oneBadMonth.metrics.good_months).toBe(5);
+    expect(twoBadMonths.metrics.good_months).toBe(4);
+    expect(twoBadMonths.metrics.late_fee_events).toBe(oneBadMonth.metrics.late_fee_events);
+    expect(twoBadMonths.components).toEqual(oneBadMonth.components);
+    expect(twoBadMonths.reliability_index).toBe(oneBadMonth.reliability_index);
   });
 
   it('never returns a negative index however bad the inputs', () => {

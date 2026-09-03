@@ -160,17 +160,33 @@ describe('the coverage gate runs before anything is loaded', () => {
 
 describe('category pinning decides whether a score can be served', () => {
   /**
-   * A covering run that recorded no dictionary cannot be scored: the essential
-   * list is unknown, so component C is undefined. This is decided from LOCAL
-   * state — the forbidden client proves no upstream call is attempted.
+   * The dictionary is global and carries no date range, so a covering run that
+   * recorded no version is not a reason to refuse — the current mapping is a
+   * valid one. Scoring uses it and says so, rather than failing while a usable
+   * dictionary sits in the database. Decided from LOCAL state throughout: the
+   * forbidden client proves no upstream call is attempted.
    */
-  it('refuses with CATEGORIES_UNAVAILABLE when the covering run pinned none', async () => {
+  it('scores using the current dictionary when the covering run recorded none', async () => {
+    await seedDictionary(V);
     await seedTransactions();
     await seedRun(null);
-    await expect(service().getReliability(USER, FROM)).rejects.toMatchObject({
-      code: 'CATEGORIES_UNAVAILABLE',
-      statusCode: 503,
-    });
+
+    const res = await service().getReliability(USER, FROM);
+    expect(res.reliability_index).toBeGreaterThan(0);
+    expect(res.data_quality.warnings.join(' ')).toMatch(/recorded no merchant category/i);
+  });
+
+  it('records the version it actually used, so the score stays reproducible', async () => {
+    await seedDictionary(V);
+    await seedTransactions();
+    await seedRun(null);
+    await service().getReliability(USER, FROM);
+
+    const { rows } = await pool.query<{ category_version: number }>(
+      'SELECT category_version FROM score_snapshots WHERE user_id = $1',
+      [USER],
+    );
+    expect(rows[0]?.category_version).toBe(V);
   });
 
   it('refuses when the pinned version is not stored, rather than falling back', async () => {

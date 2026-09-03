@@ -31,6 +31,45 @@ const ACCOUNTS = new Map<string, AccountType>([
 const SAVINGS_CODES = new Set(['6540']);
 const classify = (ts: Transaction[]) => classifyTransfers(ts, ACCOUNTS, SAVINGS_CODES);
 
+/**
+ * Identification works without linking the two legs, because either signal is
+ * enough on its own: where the money landed, or how the provider labelled it.
+ * These two pin the edges of that — one where a signal is present but the
+ * category is not, one where neither signal is present at all.
+ */
+describe('identification without linkage', () => {
+  /**
+   * The account type alone decides. Documented in `transfers.ts`, and easy to
+   * regress into requiring a category code — which would silently start
+   * counting uncoded savings deposits as income.
+   */
+  it('a credit into savings with NO savings code is still saving, not income', () => {
+    const r = classify([
+      txn({ id: 't', amount: '300.00', isCredit: true, accountId: 'acc_sav', category: null }),
+    ]);
+    expect(r.savingsInIds.has('t')).toBe(true);
+    expect(r.excludedFromIncome.has('t')).toBe(true);
+  });
+
+  /**
+   * The documented gap: a transfer from the user's own account at ANOTHER bank
+   * lands in checking, carries no savings code, and has no second leg here — so
+   * neither signal fires and nothing can pair it. It counts as income.
+   *
+   * This asserts the limitation rather than the fix, deliberately: it is what
+   * `docs/scoring-model.md` publishes, and a future "exclude anything that looks
+   * round and recurring" heuristic would break it — which is the point, because
+   * a false positive erases real income.
+   */
+  it('an uncoded, unpaired credit into checking IS counted as income', () => {
+    const r = classify([
+      txn({ id: 't', amount: '300.00', isCredit: true, accountId: 'acc_chk', category: null }),
+    ]);
+    expect(r.excludedFromIncome.has('t')).toBe(false);
+    expect(r.savingsInIds.has('t')).toBe(false);
+  });
+});
+
 describe('direction decides the treatment', () => {
   it('a credit into savings is saving, and is NOT income', () => {
     const r = classify([
@@ -67,17 +106,22 @@ describe('direction decides the treatment', () => {
     expect(r.savingsInIds.has('t')).toBe(true);
   });
 
-  /** checking -> checking moves no money into or out of the household. */
-  it('a checking-to-checking shuffle contributes nothing in either direction', () => {
+  /**
+   * checking → checking credits no savings — neither leg touches a savings
+   * account. It is also NOT identified as a transfer: nothing in either row
+   * says so, and inferring it from a matching amount and date would guess
+   * wrongly whenever two unrelated payments coincide. So the credit counts as
+   * income, exactly like the external-bank case.
+   */
+  it('a checking-to-checking shuffle credits no savings, and is not identified', () => {
     const r = classify([
       txn({ id: 'd', amount: '-500.00', isCredit: false, accountId: 'acc_chk' }),
       txn({ id: 'c', amount: '500.00', isCredit: true, accountId: 'acc_chk2' }),
     ]);
     expect(r.savingsInIds.size).toBe(0);
     expect(r.savingsOutIds.size).toBe(0);
-    // Still neutralised, so the credit is not mistaken for income.
-    expect(r.excludedFromIncome.has('c')).toBe(true);
-    expect(r.excludedFromSpend.has('d')).toBe(true);
+    expect(r.excludedFromIncome.has('c')).toBe(false);
+    expect(r.excludedFromSpend.has('d')).toBe(false);
   });
 
   it('leaves genuine salary alone', () => {
@@ -166,94 +210,9 @@ describe('against the real acc_1001_sav fixture', () => {
     expect(wouldCountAsIncome).toEqual([]);
   });
 
-  it('pairs nothing, because this provider emits only one leg', () => {
-    // Nothing is excluded as a matched debit: there is no second leg to match.
+  it('excludes nothing from spending — every row here is a credit', () => {
+    // The savings-debit rule is the only source of spend exclusions, and this
+    // account has no debits: the provider emits one leg, on the receiving side.
     expect(classify(rows).excludedFromSpend.size).toBe(0);
-  });
-});
-
-describe('pair matching (safety net for double-entry providers)', () => {
-  it('neutralises both legs when a provider does emit them', () => {
-    const r = classify([
-      txn({ id: 'd', amount: '-1000.00', isCredit: false, accountId: 'acc_chk' }),
-      txn({ id: 'c', amount: '1000.00', isCredit: true, accountId: 'acc_chk2' }),
-    ]);
-    // Both legs neutralised: the credit is not income, the debit is not spend.
-    expect(r.excludedFromIncome.has('c')).toBe(true);
-    expect(r.excludedFromSpend.has('d')).toBe(true);
-  });
-
-  it('consumes each transaction at most once', () => {
-    const r = classify([
-      txn({ id: 'd1', amount: '-500.00', isCredit: false, accountId: 'acc_chk' }),
-      txn({ id: 'd2', amount: '-500.00', isCredit: false, accountId: 'acc_chk' }),
-      txn({ id: 'c1', amount: '500.00', isCredit: true, accountId: 'acc_chk2' }),
-    ]);
-    // One credit cannot settle two debits: exactly one debit is consumed.
-    expect(r.excludedFromSpend.size).toBe(1);
-    expect(r.excludedFromIncome.size).toBe(1);
-  });
-
-  it('does not pair beyond the settlement window', () => {
-    const r = classify([
-      txn({
-        id: 'd',
-        amount: '-500.00',
-        bookedAt: '2026-01-01',
-        isCredit: false,
-        accountId: 'acc_chk',
-      }),
-      txn({
-        id: 'c',
-        amount: '500.00',
-        bookedAt: '2026-01-20',
-        isCredit: true,
-        accountId: 'acc_chk2',
-      }),
-    ]);
-    expect(r.excludedFromSpend.size).toBe(0);
-    expect(r.excludedFromIncome.size).toBe(0);
-  });
-
-  it('does not pair across users, or unequal amounts', () => {
-    expect(
-      classify([
-        txn({ id: 'd', amount: '-500.00', isCredit: false, accountId: 'acc_chk' }),
-        txn({ id: 'c', amount: '500.00', isCredit: true, accountId: 'acc_chk2', userId: 'other' }),
-      ]).excludedFromSpend,
-    ).toHaveLength(0);
-    expect(
-      classify([
-        txn({ id: 'd', amount: '-500.00', isCredit: false, accountId: 'acc_chk' }),
-        txn({ id: 'c', amount: '499.99', isCredit: true, accountId: 'acc_chk2' }),
-      ]).excludedFromSpend,
-    ).toHaveLength(0);
-  });
-
-  it('is deterministic', () => {
-    const input = [
-      txn({
-        id: 'd',
-        amount: '-500.00',
-        bookedAt: '2026-01-05',
-        isCredit: false,
-        accountId: 'acc_chk',
-      }),
-      txn({
-        id: 'c1',
-        amount: '500.00',
-        bookedAt: '2026-01-05',
-        isCredit: true,
-        accountId: 'acc_chk2',
-      }),
-      txn({
-        id: 'c2',
-        amount: '500.00',
-        bookedAt: '2026-01-06',
-        isCredit: true,
-        accountId: 'acc_chk2',
-      }),
-    ];
-    expect([...classify(input).excludedFromSpend]).toEqual([...classify(input).excludedFromSpend]);
   });
 });
