@@ -37,8 +37,8 @@ comes from an API that can be slow, incomplete, or wrong.
 - Being the system of record for transactions. The Banking API owns it.
 - FX conversion. The service is EUR-only; foreign-currency rows are dropped at
   ingest and counted, never converted (§4.5).
-- Tombstoning an account that disappears upstream. Currently fails _silently_
-  rather than loudly.
+- Reversals and deletions of transactions. Upstream exposes no way to recognise
+  either.
 
 ---
 
@@ -396,7 +396,7 @@ next time.
 | `from` in the future                           | Accepted; coverage will not extend that far, so it refuses.                                                                                                                                                                                                                                                  |
 | Own-account transfer                           | Reclassified by account type and category group: into savings is saving, out of savings is dis-saving, same-type is ignored. Never income **where the data identifies it**. A transfer from the user's own account at another bank does not, and counts as income; see [scoring-model.md](scoring-model.md). |
 | Non-EUR account or transaction                 | Dropped at ingest, counted on `sync.non_eur_skipped` and reported in the sync `warnings`. The account's EUR history is still scored; a non-EUR account is dropped whole, because its balance would otherwise anchor the reconstruction.                                                                      |
-| Account removed upstream                       | **Not handled** — see non-goals.                                                                                                                                                                                                                                                                             |
+| Account removed upstream                       | Marked `dormant` on the next successful sync and dropped from the coverage gate, so a closed account cannot refuse the user forever. Its transactions stay and still score. Reappearing upstream makes it `active` again.                                                                                    |
 
 ### 4.7 Observability
 

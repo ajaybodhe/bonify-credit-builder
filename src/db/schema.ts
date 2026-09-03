@@ -23,6 +23,16 @@ export const accounts = pgTable(
     name: text('name'),
     type: text('type'),
     currency: text('currency').notNull().default('EUR'),
+    /**
+     * `dormant` = still here, no longer published by the Banking API. Upstream
+     * exposes no deletion signal, so absence from a successful account listing
+     * is the only evidence there is. Coverage requires only `active` accounts:
+     * a closed account can never be re-fetched, so demanding it would refuse
+     * the user forever.
+     */
+    status: text('status', { enum: ['active', 'dormant'] })
+      .notNull()
+      .default('active'),
     currentBalance: numeric('current_balance', { precision: 14, scale: 2 }),
     lastSyncedAt: timestamp('last_synced_at', { withTimezone: true }).notNull().defaultNow(),
   },

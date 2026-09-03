@@ -62,7 +62,9 @@ export async function assessCoverage(
   window: ScoringWindow,
 ): Promise<Coverage> {
   const accounts = await client.query<{ id: string }>(
-    'SELECT id FROM accounts WHERE user_id = $1 ORDER BY id',
+    // Only `active`: a dormant account is gone upstream and can never be
+    // re-fetched, so requiring coverage for it would refuse the user forever.
+    "SELECT id FROM accounts WHERE user_id = $1 AND status = 'active' ORDER BY id",
     [userId],
   );
 

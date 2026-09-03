@@ -221,9 +221,10 @@ builds.
 - **Observability is instrumented but not operationalised.** 19 metrics, traces
   and structured logs all work, but no collector configuration ships, so with no
   exporter endpoint set the SDK never starts. No dashboards, no alerting.
-- **No account tombstoning.** An account that disappears upstream keeps
-  scoring, and does so silently rather than loudly, which is the part that
-  matters.
+- **A closed account is inferred, not signalled.** Upstream publishes no
+  deletion signal, so an account missing from a successful listing is marked
+  dormant and dropped from the coverage gate. If upstream ever omits an account
+  by mistake, we would read that as a closure until it reappears.
 - **Reversals and deletions are not implemented.** A change to a transaction is
   handled: the old row is archived and replaced by the new one. Reversals and
   deletions are not, because the provider exposes no way to recognise them — no

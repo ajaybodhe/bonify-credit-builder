@@ -49,6 +49,15 @@ export const nonEurSkipped = meter.createCounter('sync.non_eur_skipped', {
   description: 'Accounts and transactions skipped as non-EUR, by kind and currency',
 });
 
+/**
+ * Accounts that vanished from an upstream listing. A trickle is ordinary churn;
+ * a spike is upstream publishing a truncated account list, which would quietly
+ * drop those accounts out of the coverage gate.
+ */
+export const accountsTombstoned = meter.createCounter('sync.accounts_dormant', {
+  description: 'Accounts marked dormant after disappearing from the Banking API',
+});
+
 export const bankingApiRequests = meter.createCounter('banking.requests', {
   description: 'Banking API calls by endpoint and status class',
 });

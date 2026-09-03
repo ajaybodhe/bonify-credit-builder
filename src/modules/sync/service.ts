@@ -23,6 +23,7 @@ function classifyFailure(err: unknown): string {
   return typeof code === 'string' ? code.toLowerCase() : 'unknown';
 }
 import {
+  accountsTombstoned,
   categoryRefreshFailures,
   nonEurSkipped,
   syncAccountFailures,
@@ -116,8 +117,43 @@ export class SyncService {
                     currency: sql`excluded.currency`,
                     currentBalance: sql`excluded.current_balance`,
                     lastSyncedAt: sql`excluded.last_synced_at`,
+                    // Republished after an absence: undo the tombstone.
+                    status: sql`'active'`,
                   },
                 });
+            }
+
+            /**
+             * Tombstoning. Upstream publishes no deletion signal, so an account
+             * that vanishes from a SUCCESSFUL listing is the only evidence we
+             * get that it closed. `listAccounts` returns the whole set in one
+             * response and throws otherwise, so absence here is real and not a
+             * half-read page.
+             *
+             * Marked, never deleted: the transactions stay, and so does the
+             * history of every score already computed from them.
+             */
+            const publishedIds = published.map((a) => a.id);
+            const tombstoned = await this.db.execute<{ id: string }>(
+              publishedIds.length > 0
+                ? sql`UPDATE accounts SET status = 'dormant'
+                       WHERE user_id = ${userId} AND status = 'active'
+                         AND id NOT IN (${sql.join(
+                           publishedIds.map((id) => sql`${id}`),
+                           sql`, `,
+                         )})
+                   RETURNING id`
+                : sql`UPDATE accounts SET status = 'dormant'
+                       WHERE user_id = ${userId} AND status = 'active'
+                   RETURNING id`,
+            );
+            const wentDormant = tombstoned.rows.length;
+            if (wentDormant > 0) {
+              accountsTombstoned.add(wentDormant);
+              this.log.warn(
+                { userId, syncRunId: run.runId, accounts: wentDormant },
+                'accounts no longer published upstream; marked dormant and dropped from coverage',
+              );
             }
 
             const totals = { fresh: 0, duplicate: 0, amended: 0, pages: 0, skipped: 0 };
