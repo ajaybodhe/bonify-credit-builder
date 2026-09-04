@@ -35,23 +35,7 @@ export class CategoryResolver {
     const cached = this.byVersion.get(version);
     if (cached) return cached;
 
-    if (client) return this.readVersionOn(client, version);
-
-    const [row] = await this.db
-      .select()
-      .from(merchantCategoryVersions)
-      .where(eq(merchantCategoryVersions.version, version))
-      .limit(1);
-    const dictionary = row ? await this.readVersion(version, row.fetchedAt) : null;
-    if (!dictionary) {
-      throw new AppError(
-        'CATEGORIES_UNAVAILABLE',
-        503,
-        `Merchant category dictionary version ${String(version)} is not stored locally. ` +
-          'Dictionary versions are never deleted, so this means the sync that recorded ' +
-          'it never persisted one.',
-      );
-    }
+    const dictionary = await this.mustReadVersion(version, client);
     this.byVersion.set(version, dictionary);
     return dictionary;
   }
@@ -79,7 +63,7 @@ export class CategoryResolver {
       .limit(1);
 
     if (current?.contentHash === hash) {
-      return this.mustReadVersion(current.version, current.fetchedAt);
+      return this.mustReadVersion(current.version);
     }
 
     const version = (current?.version ?? 0) + 1;
@@ -97,26 +81,45 @@ export class CategoryResolver {
       );
     });
 
-    return this.mustReadVersion(version, now);
+    return this.mustReadVersion(version);
   }
 
-  private async readVersionOn(client: pg.PoolClient, version: number): Promise<CategoryDictionary> {
-    const { rows } = await client.query<{ code: string; group: string; fetched_at: Date }>(
-      `SELECT c.code, c."group", v.fetched_at
-         FROM merchant_categories c
-         JOIN merchant_category_versions v USING (version)
-        WHERE c.version = $1`,
-      [version],
-    );
-    if (rows.length === 0) {
-      throw new AppError(
-        'CATEGORIES_UNAVAILABLE',
-        503,
-        `Merchant category dictionary version ${String(version)} is not stored locally.`,
-      );
-    }
+  /**
+   * The one reader. `client` is passed on the scoring path so the read joins the
+   * caller's MVCC snapshot; without it the pool is fine, because a version's
+   * rows never change once written.
+   */
+  private async readVersion(
+    version: number,
+    client?: pg.PoolClient,
+  ): Promise<CategoryDictionary | null> {
+    const rows = client
+      ? (
+          await client.query<{ code: string; group: string; fetched_at: Date }>(
+            `SELECT c.code, c."group", v.fetched_at
+               FROM merchant_categories c
+               JOIN merchant_category_versions v USING (version)
+              WHERE c.version = $1`,
+            [version],
+          )
+        ).rows
+      : await this.db
+          .select({
+            code: merchantCategories.code,
+            group: merchantCategories.group,
+            fetched_at: merchantCategoryVersions.fetchedAt,
+          })
+          .from(merchantCategories)
+          .innerJoin(
+            merchantCategoryVersions,
+            eq(merchantCategories.version, merchantCategoryVersions.version),
+          )
+          .where(eq(merchantCategories.version, version));
+
+    if (rows.length === 0) return null;
+
     const byGroup = (group: string) => rows.filter((r) => r.group === group).map((r) => r.code);
-    const dictionary: CategoryDictionary = {
+    return {
       version,
       essential: byGroup('essential'),
       highRisk: byGroup('high_risk'),
@@ -125,33 +128,23 @@ export class CategoryResolver {
       fees: byGroup('fees'),
       fetchedAt: rows[0]?.fetched_at ?? new Date(0),
     };
-    this.byVersion.set(version, dictionary);
+  }
+
+  /** A stored version with no entries is unusable, and the caller cannot proceed. */
+  private async mustReadVersion(
+    version: number,
+    client?: pg.PoolClient,
+  ): Promise<CategoryDictionary> {
+    const dictionary = await this.readVersion(version, client);
+    if (!dictionary) {
+      throw new AppError(
+        'CATEGORIES_UNAVAILABLE',
+        503,
+        `Merchant category dictionary version ${String(version)} is not stored locally. ` +
+          'Dictionary versions are never deleted, so this means the sync that recorded ' +
+          'it never persisted one.',
+      );
+    }
     return dictionary;
-  }
-
-  private async readVersion(version: number, fetchedAt: Date): Promise<CategoryDictionary | null> {
-    const rows = await this.db
-      .select()
-      .from(merchantCategories)
-      .where(eq(merchantCategories.version, version));
-    if (rows.length === 0) return null;
-
-    const byGroup = (group: string) => rows.filter((r) => r.group === group).map((r) => r.code);
-
-    return {
-      version,
-      essential: byGroup('essential'),
-      highRisk: byGroup('high_risk'),
-      savings: byGroup('savings'),
-      income: byGroup('income'),
-      fees: byGroup('fees'),
-      fetchedAt,
-    };
-  }
-
-  private async mustReadVersion(version: number, fetchedAt: Date): Promise<CategoryDictionary> {
-    const d = await this.readVersion(version, fetchedAt);
-    if (!d) throw new Error(`Merchant category version ${String(version)} has no entries`);
-    return d;
   }
 }
