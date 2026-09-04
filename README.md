@@ -173,24 +173,25 @@ npm run build              # → dist/
 
 **[`docs/architecture-design.md`](docs/architecture-design.md)** — motivation,
 goals and non-goals, success metrics, API design, data model, consistency and
-concurrency guarantees, failure modes, observability, request-flow diagrams,
-testing strategy, technology choices, and open questions.
+concurrency guarantees, failure modes — including how amendments, reversals,
+deletions and closed accounts are handled — observability, request-flow
+diagrams, testing strategy, technology choices, and open questions.
 
 ## Scoring limitations and bias
 
 **[`docs/scoring-model.md`](docs/scoring-model.md)** — every constant with its
-reasoning, worked examples, and an honest account of what the model cannot see.
+reasoning, worked examples, why `negative_balance_days` is an estimate rather
+than an observation, and an honest account of what the model cannot see and what
+it is not calibrated against.
 
 ## Known limitations
 
 Stated plainly, so none of it has to be discovered.
 
-**Tests use their own database.** `TEST_DATABASE_URL` (created by
-`scripts/setup.sh`, and already separate in CI). The suites write real rows
-through the real service, so they cannot be wrapped in a transaction and rolled
-back — and sharing one database is not safe: transaction ids are the primary
-key, and the e2e fake mints the same `txn_00001` shapes the live provider does,
-so an e2e sync upserts straight over development data.
+**Tests need their own database** — `TEST_DATABASE_URL`, created by
+`scripts/setup.sh` and already separate in CI. A sync opens its own
+transactions, so a test cannot roll one back; sharing a database with
+development data means an e2e sync upserts over it.
 
 **Not run on this machine.** Development was on macOS 12.4, which no current
 container runtime supports, so the Docker image has never been built here.
@@ -209,19 +210,6 @@ build caused by someone else's outage teaches people to ignore red builds.
 - **Observability is instrumented, not operationalised.** 20 metrics, traces and
   structured logs work, but no collector config ships and no exporter endpoint
   is set, so the SDK never starts. No dashboards, no alerting.
-
-**Inferred rather than signalled.** Upstream publishes no deletion signal, so an
-account missing from a successful listing is marked dormant and dropped from the
-coverage gate — an account omitted by mistake reads as closed until it returns.
-Transaction reversals and deletions are not handled at all for the same reason:
-no reversal flag, no link to an original. Amendments _are_ handled — the old row
-is archived and replaced.
-
-**The model is uncalibrated.** `negative_balance_days` is reconstructed from a
-single undated balance that does not reconcile with the transactions the provider
-publishes, so it is an estimate and differs from the brief's illustrative figure
-([why](docs/scoring-model.md)). The weights are reasoned, not fitted against
-repayment outcomes: the score should inform a human decision, not make one.
 
 ## Discussion topics
 
