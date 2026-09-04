@@ -152,6 +152,32 @@ describe('non-EUR accounts are dropped whole', () => {
   });
 });
 
+describe('a dictionary that cannot be refreshed is reported, not just logged', () => {
+  /**
+   * Upstream adding a category group fails the whole refresh — one unknown group
+   * rejects every valid entry with it. That is the safe direction (a partial
+   * dictionary would silently drop codes), but it freezes scoring on the last
+   * stored version, and the caller has to be told.
+   */
+  it('warns in the sync response when the refresh fails', async () => {
+    const failing = {
+      refreshFromUpstream: () => Promise.reject(new Error('unknown category group')),
+      currentVersion: () => Promise.resolve(1),
+    } as unknown as CategoryResolver;
+
+    const res = await new SyncService(
+      db,
+      serving([[txn()]], { [EUR_ACCOUNT]: 'EUR' }),
+      pool,
+      failing,
+      silentLog,
+    ).syncUser(USER);
+
+    expect(res.status).toBe('succeeded');
+    expect(res.warnings.join(' ')).toMatch(/could not be refreshed/);
+  });
+});
+
 describe('sync.non_eur_skipped', () => {
   it('counts what was dropped, split by kind and currency', async () => {
     const m = collectMetrics();

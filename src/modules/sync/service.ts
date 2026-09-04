@@ -15,10 +15,19 @@ function isUniqueViolation(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === '23505';
 }
 
+/** 4xx that upstream retries can fix; anything else in that range is ours. */
+const TRANSIENT_4XX = new Set([408, 425, 429]);
+
 // Coarse buckets — never the message, which can carry account ids.
 function classifyFailure(err: unknown): string {
   const status = (err as { details?: { status?: unknown } } | null)?.details?.status;
-  if (typeof status === 'number') return `http_${String(Math.floor(status / 100))}xx`;
+  if (typeof status === 'number') {
+    // Separated from `http_4xx` because it points somewhere else entirely: a
+    // malformed request or a rejected credential is our deploy, not upstream's
+    // health, and no amount of re-syncing will clear it.
+    if (status >= 400 && status < 500 && !TRANSIENT_4XX.has(status)) return 'client_error';
+    return `http_${String(Math.floor(status / 100))}xx`;
+  }
   const code = (err as { code?: unknown } | null)?.code;
   return typeof code === 'string' ? code.toLowerCase() : 'unknown';
 }
@@ -198,10 +207,12 @@ export class SyncService {
                 `passed with the Banking API still responding slowly. Retry later.`;
             }
 
+            let categoryRefreshFailed = false;
             try {
               await this.categories.refreshFromUpstream();
             } catch (err) {
               const lost = isUniqueViolation(err);
+              categoryRefreshFailed = !lost;
               this.log[lost ? 'debug' : 'warn'](
                 { err, userId },
                 lost
@@ -266,6 +277,14 @@ export class SyncService {
                   ? [
                       `${String(totals.skipped)} transaction(s) skipped as non-EUR; ` +
                         'they are neither converted nor counted toward the score',
+                    ]
+                  : []),
+                // A frozen dictionary is degraded data, and degraded data must
+                // not be visible only to whoever reads the logs.
+                ...(categoryRefreshFailed
+                  ? [
+                      'Merchant category dictionary could not be refreshed; scoring will ' +
+                        'use the last stored version, which may be out of date',
                     ]
                   : []),
               ],
