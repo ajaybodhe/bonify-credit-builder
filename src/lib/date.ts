@@ -1,5 +1,5 @@
 /**
- * The brief's window is 6 calendar months back from `from`, inclusive:
+ * The scoring window is 6 calendar months back from `from`, inclusive:
  * `2026-02-20` → `2025-09-01..2026-02-20`. Plain YYYY-MM-DD in UTC throughout.
  */
 import { AppError } from './errors.js';

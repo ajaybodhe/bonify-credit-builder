@@ -1,16 +1,15 @@
 # Discussion topics
 
-> The brief lists these as _not required to be implemented_. Each section states
-> the position the current design already takes, so the conversation starts from
-> something concrete rather than from a blank page.
+> These are design questions this service does not need to answer to work. Each
+> section states the position the current design already takes, so a conversation
+> starts from something concrete rather than from a blank page.
 
 ---
 
 ## API design and evolution
 
 **What is implemented: nothing.** The service exposes `/api/users/{userId}/...`
-exactly as the brief specifies, and
-carries no version segment, because shipping one before there is a second
+and carries no version segment, because shipping one before there is a second
 version is ceremony that solves nothing and doubles the surface to test.
 
 That is not the same as having no answer.
