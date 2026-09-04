@@ -1,8 +1,8 @@
 # The Reliability Index
 
-Every constant here is asserted against `MODEL` by
-`tests/unit/scoring.test.ts`, so changing one without changing the other fails
-the build.
+Every constant here lives in `MODEL` in `models/v1.ts`, which is frozen: its
+source is hashed by `tests/unit/model-versions.test.ts`, so changing a number
+without shipping a new model version fails the build.
 
 ## What the score is
 
@@ -29,9 +29,10 @@ reliability_index = clamp(
 
 ## Where the numbers come from
 
-We have **Four components - income regularity, income coverage, essential payments consistency and resilience adjustment: each with a weight of 25 points.** We treat all components with equal weight as ranking them by something else would invent a precision or system which we have not derived or proven yet. Resilience
-is the only one that can subtract, because it is the only one that registers
-things going wrong.
+**Four components, 25 points each:** income regularity, income coverage,
+essential payments consistency, and resilience. They carry equal weight because
+ranking them would claim a precision nothing here has earned. Resilience alone
+can subtract, because it is the only one that registers things going wrong.
 
 **The shape inside each component is judgement**, reasoned from how affordability
 is normally assessed: steady income beats large income, a surplus absorbs shocks,
@@ -44,9 +45,10 @@ decision rather than make one.
 
 ## The scoring window
 
-Six calendar months back from `from`, inclusive. `from=2026-02-20` gives
-`2025-09-01 … 2026-02-20`: the first day of the month five months before `from`'s
-month, through `from` itself. Six month buckets, the last one truncated. All arithmetic is UTC on `YYYY-MM-DD` strings. A booking date has no timezone.
+Six calendar months back from `from`, inclusive: `from=2026-02-20` gives
+`2025-09-01 … 2026-02-20` — the first day of the month five months back, through
+`from` itself. Six month buckets, the last truncated. All arithmetic is UTC on
+`YYYY-MM-DD` strings, because a booking date has no timezone.
 
 The window must be **completely** covered by synced data or nothing is scored: a
 partial window is not a less certain score, it is a wrong one, because unfetched
@@ -81,40 +83,28 @@ _Example._ Income in five of six months: 5 ÷ 6 = 0.83 → **21 points**.
 
 ### Moving your own money is not income
 
-Money landing in your own savings account is a credit, but it is not earnings, so
-it does not count as income here.
+A credit into your own savings account is not earnings. Counting it would let the
+same €300 score twice — once arriving, once saved — so anyone shuffling money
+between their own accounts would beat someone with identical finances who does
+not.
 
-Otherwise the same €300 counts twice — once as money arriving, and again as money
-saved — and anyone who moves cash between their own accounts each month would
-outscore someone with identical finances who does not.
+**Identifying one, with nothing to link.** A transaction carries no counterparty
+and no transfer id, so the two legs cannot be matched. That rarely matters: this
+provider reports an internal transfer as a _single_ credit on the receiving
+account, so there is usually no second leg to find. Identification uses what the
+row already carries — the account's `type` and the provider's category group.
+Either alone is enough.
 
-The trade-off is that a simpler rule, counting every credit as income, would
-score those users higher.
-
-**How a transfer is identified, given no linkage.** The API offers no way to
-link the two sides of a transfer — a transaction carries no counterparty, no
-transfer id, no reference to another row. That mostly does not matter, because
-there is usually no second side: this provider reports an internal transfer as a
-single credit on the receiving account.
-
-So identification does not use linkage. It uses two things the row carries on its
-own: **where the money landed** — the account's `type`, known because the account
-list came from this user — and **how the provider labelled it**, the merchant
-category group. Either is enough on its own.
-
-**There is deliberately no fallback that guesses.** Matching two legs by equal
-amount and nearby date was tried and removed: it assumes a provider that emits
-both sides, which this one does not and a future one might not either — it could
-just as well expose a transfer id or a counterparty, and we would be matching on
-coincidence instead. The failure is also one-directional: two unrelated payments
-of the same amount on the same day would be silently erased from income. Against
-this provider it matched nothing, so it was pure risk.
+We do not guess at the rest. Matching two legs by equal amount and nearby date
+was built and removed: it assumes a provider that emits both sides, and it fails
+in one direction only — two unrelated payments of the same amount on one day
+would erase real income. Against this provider it matched nothing.
 
 So a transfer is excluded when the data says so, and counted as income when it
-does not. The case that falls through is a transfer from the user's own account
-**at another bank**: it lands in checking, carries no savings code, and its other
-leg is not in our data at all. It counts as income — the one case where this rule
-silently overstates, and the reason to widen the input rather than the model.
+does not. The case that slips through is a transfer from your own account **at
+another bank**: it lands in checking, carries no savings code, and its other leg
+is not in our data at all. That overstates income, and the fix is a wider input,
+not a cleverer rule.
 
 ---
 
@@ -169,19 +159,16 @@ the covering sync recorded**, never hardcoded and never fetched at scoring time.
 An upstream category addition would otherwise change the denominator and shift
 every score silently.
 
-**What pinning does and does not mean.** The dictionary is one global artefact —
-a code-to-group mapping, versioned whenever its content changes, with no date
-range attached to any version. So a pin records _which mapping produced this
-score_, which is what keeps the score reproducible. It is **not** a claim that
-those categories were the ones in force across the transaction window; nothing
-upstream expresses that, and a code's group does not depend on when it was
-fetched.
+**What pinning does and does not mean.** The dictionary is one global mapping
+of code to group, versioned whenever its content changes, with no date range
+attached. A pin records _which mapping produced this score_ — enough to reproduce
+it. It is not a claim that those categories were in force across the window;
+nothing upstream expresses that.
 
-That is also why a missing pin is not a refusal. If the covering sync recorded no
-version — a first sync whose category refresh failed leaves one behind — scoring
-uses the current dictionary and says so in `data_quality`, rather than refusing
-while a perfectly usable mapping sits in the database. Only a service that has
-never fetched a dictionary at all cannot score.
+Which is why a missing pin is not a refusal: scoring falls back to the current
+dictionary and says so in `data_quality`, rather than refusing while a usable
+mapping sits in the database. Only a service that has never fetched one at all
+cannot score.
 
 _Example._ Four essential categories over six months = 24 possible
 category-months. Rent and groceries appear in all six, utilities in five,
@@ -223,35 +210,26 @@ movement makes the series worse rather than better.
 
 ## Currency — EUR only, and foreign rows are dropped
 
-The exercise is single-currency and FX conversion is out of scope, so the service
-does none. What it must not do is combine currencies as though the question did
-not arise: upstream types `currency` as a bare string with no enum, so a
-foreign-currency row is contractually possible even though none has been
-observed.
+The service does no FX. What it must not do is add currencies together as though
+the question never arose — and it can arise, because upstream types `currency` as
+a bare string with no enum.
 
-Summing one in is not a small error. A single USD credit added to an otherwise
-EUR history moves `income_coverage_ratio` from 1.11 to 2.04 — the headline index
-barely twitches, because component B saturates, so the corruption hides in a
-metric while the score looks stable. And the response labels every score `"EUR"`.
+Adding one in is not a rounding error. A single USD credit in an otherwise EUR
+history moves `income_coverage_ratio` from 1.11 to 2.04, while the headline index
+barely twitches because that component saturates. The corruption hides in a
+metric, and the response still says `"EUR"`.
 
-**The policy: drop at ingest, count, and carry on.**
+**So: drop at ingest, count, carry on.** A foreign _transaction_ is not stored,
+but the rest of its page is, so the account keeps its EUR history. A foreign
+_account_ is dropped whole, balance included — that balance would otherwise
+anchor the negative-balance reconstruction of a EUR series. Every drop increments
+`sync.non_eur_skipped` and is named in the sync `warnings`, so a caller sees what
+was discarded instead of inferring it from a total that does not add up.
 
-- A **transaction** in another currency is not stored. The rest of its page is,
-  so an otherwise-EUR account keeps its history and stays scoreable.
-- An **account** in another currency is dropped whole and never walked —
-  including its balance, which would otherwise anchor the negative-balance
-  reconstruction of a EUR series.
-- Every drop increments `sync.non_eur_skipped{kind,currency}` and is named in the
-  sync response `warnings`, so the caller sees what was discarded rather than
-  inferring it from a total that does not add up.
-- Nothing is converted, and nothing is combined. A dropped row is absent from the
-  score, not approximated in it.
-
-The consequence to know about: an account that flips to a foreign currency after
-having been synced in EUR stops being walked, so it falls out of coverage and
-scoring **refuses** for that user until it is resolved. That is deliberate —
-refusing is the loud failure; scoring the remainder as though the account were
-complete would be the quiet one.
+One consequence worth knowing: an account that switches currency after being
+synced in EUR stops being walked, falls out of coverage, and scoring refuses for
+that user until it is resolved. Refusing is the loud failure; scoring the rest as
+if the account were complete would be the quiet one.
 
 ---
 

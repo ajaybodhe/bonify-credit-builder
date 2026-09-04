@@ -180,9 +180,7 @@ diagrams, testing strategy, technology choices, and open questions.
 ## Scoring limitations and bias
 
 **[`docs/scoring-model.md`](docs/scoring-model.md)** — every constant with its
-reasoning, worked examples, why `negative_balance_days` is an estimate rather
-than an observation, and an honest account of what the model cannot see and what
-it is not calibrated against.
+reasoning, worked examples, decisions made, shotcoming and some potential workarounds.
 
 ## Known limitations
 
