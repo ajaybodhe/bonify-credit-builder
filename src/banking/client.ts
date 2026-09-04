@@ -58,21 +58,22 @@ export class BankingApiClient {
     return this.dataRange.value;
   }
 
+  /**
+   * The only endpoint with a permanent failure to map: a 404 means no such user,
+   * and reported as an upstream error it would look like a retryable outage.
+   * The transactions endpoint needs no equivalent — an unknown account returns
+   * an empty page, not a 404 (verified against the live API).
+   */
   async listAccounts(userId: string, signal?: AbortSignal): Promise<BankingAccount[]> {
-    try {
-      const body = await this.http.get(
-        `/users/${encodeURIComponent(userId)}/accounts`,
-        undefined,
-        signal,
-      );
-      return accountsResponseSchema.parse(body).accounts;
-    } catch (err) {
-      // Permanent: as an upstream failure it would look like a retryable outage.
-      if (err instanceof UpstreamError && upstreamStatus(err) === 404) {
-        throw new NotFoundError(`No such user upstream: ${userId}`);
-      }
-      throw err;
-    }
+    const body = await this.http
+      .get(`/users/${encodeURIComponent(userId)}/accounts`, undefined, signal)
+      .catch((err: unknown) => {
+        if (err instanceof UpstreamError && upstreamStatus(err) === 404) {
+          throw new NotFoundError(`No such user upstream: ${userId}`);
+        }
+        throw err;
+      });
+    return accountsResponseSchema.parse(body).accounts;
   }
 
   /** The cursor never leaves this generator: an offset, void once `to` moves. */
