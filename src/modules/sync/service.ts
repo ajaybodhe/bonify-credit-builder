@@ -239,8 +239,6 @@ export class SyncService {
               duplicateTransactions: totals.duplicate,
               amendedTransactions: totals.amended,
               pagesFetched: totals.pages,
-              accountsCompleted: covered.length,
-              accountsFailed: failed,
               syncedFrom: range.from,
               coversThrough: range.to,
               coveredAccountIds: covered,

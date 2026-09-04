@@ -124,13 +124,16 @@ describe('withSyncRun', () => {
   });
 
   it('respects an explicit finish() over the default', async () => {
-    await withSyncRun(pool, USER, 'api', (run) => run.finish('partial', { accountsFailed: 2 }));
-    const row = await pool.query<{ status: string; accounts_failed: number }>(
-      'SELECT status, accounts_failed FROM sync_runs WHERE user_id = $1',
+    await withSyncRun(pool, USER, 'api', (run) =>
+      run.finish('partial', { syncedAccounts: 3, coveredAccountIds: ['acc_a'] }),
+    );
+    const row = await pool.query<{ status: string; covered_account_ids: string[] }>(
+      'SELECT status, covered_account_ids FROM sync_runs WHERE user_id = $1',
       [USER],
     );
     expect(row.rows[0]?.status).toBe('partial');
-    expect(row.rows[0]?.accounts_failed).toBe(2);
+    // 3 attempted, 1 covered — the failure count is read off these, not stored.
+    expect(row.rows[0]?.covered_account_ids).toEqual(['acc_a']);
   });
 
   it('a throw after an explicit finish() does not rewrite the recorded status', async () => {
@@ -236,17 +239,15 @@ describe('finishRun', () => {
     // Finalise from inside the run: once withSyncRun returns, the row is no
     // longer `running`, and finishRun is deliberately a no-op on it.
     const id = await withSyncRun(pool, USER, 'api', async (run) => {
-      await run.finish('partial', { newTransactions: 168, accountsFailed: 1 });
+      await run.finish('partial', { newTransactions: 168 });
       return run.runId;
     });
-    const row = await pool.query<{
-      status: string;
-      new_transactions: number;
-      accounts_failed: number;
-    }>('SELECT status, new_transactions, accounts_failed FROM sync_runs WHERE id = $1', [id]);
+    const row = await pool.query<{ status: string; new_transactions: number }>(
+      'SELECT status, new_transactions FROM sync_runs WHERE id = $1',
+      [id],
+    );
     expect(row.rows[0]?.status).toBe('partial');
     expect(row.rows[0]?.new_transactions).toBe(168);
-    expect(row.rows[0]?.accounts_failed).toBe(1);
   });
 
   it('only affects a running row, so a second call is a no-op', async () => {

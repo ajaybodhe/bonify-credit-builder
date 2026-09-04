@@ -20,6 +20,9 @@ import { testPool } from '../helpers/db.js';
  */
 const pool = testPool();
 afterAll(async () => {
+  // Snapshots first: score_snapshots.category_version is a foreign key, so a
+  // snapshot left pointing at this fixture would block deleting it.
+  await pool.query('DELETE FROM score_snapshots WHERE user_id = $1', [USER]);
   await pool.query('DELETE FROM merchant_categories WHERE version = $1', [V]);
   await pool.query('DELETE FROM merchant_category_versions WHERE version = $1', [V]);
   await pool.end();

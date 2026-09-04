@@ -1,0 +1,4 @@
+ALTER TABLE "score_snapshots" ADD CONSTRAINT "score_snapshots_category_version_merchant_category_versions_version_fk" FOREIGN KEY ("category_version") REFERENCES "public"."merchant_category_versions"("version") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "score_snapshots" ADD CONSTRAINT "score_snapshots_sync_run_id_sync_runs_id_fk" FOREIGN KEY ("sync_run_id") REFERENCES "public"."sync_runs"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "sync_runs" DROP COLUMN "accounts_completed";--> statement-breakpoint
+ALTER TABLE "sync_runs" DROP COLUMN "accounts_failed";

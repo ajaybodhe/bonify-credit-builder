@@ -13,7 +13,16 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
 
-/** Local mirror plus an audit trail. Money is `numeric(14,2)`, never a float. */
+/**
+ * Local mirror plus an audit trail. Money is `numeric(14,2)`, never a float.
+ *
+ * Three references deliberately have no foreign key. `user_id` has nothing to
+ * point at — users live upstream and this service is not their system of record.
+ * `covered_account_ids` is a jsonb array, and Postgres cannot constrain array
+ * elements. And `transaction_revisions.transaction_id` has none because neither
+ * behaviour is right: CASCADE would destroy audit history when an account is
+ * removed, NO ACTION would block removing one.
+ */
 
 export const accounts = pgTable(
   'accounts',
@@ -24,11 +33,8 @@ export const accounts = pgTable(
     type: text('type'),
     currency: text('currency').notNull().default('EUR'),
     /**
-     * `dormant` = still here, no longer published by the Banking API. Upstream
-     * exposes no deletion signal, so absence from a successful account listing
-     * is the only evidence there is. Coverage requires only `active` accounts:
-     * a closed account can never be re-fetched, so demanding it would refuse
-     * the user forever.
+     * `dormant` = upstream stopped listing it. There is no deletion signal, so
+     * absence is the only evidence we get.
      */
     status: text('status', { enum: ['active', 'dormant'] })
       .notNull()
@@ -42,7 +48,8 @@ export const accounts = pgTable(
 export const transactions = pgTable(
   'transactions',
   {
-    // Rows are NOT assumed immutable: a differing `contentHash` writes a new revision.
+    // The upstream id, so dedupe is a primary-key conflict rather than a
+    // read-then-write race. What happens on that conflict is `sync/service.ts`.
     id: text('id').primaryKey(),
     accountId: text('account_id')
       .notNull()
@@ -127,10 +134,16 @@ export const syncRuns = pgTable(
     duplicateTransactions: integer('duplicate_transactions').notNull().default(0),
     amendedTransactions: integer('amended_transactions').notNull().default(0),
     pagesFetched: integer('pages_fetched').notNull().default(0),
-    accountsCompleted: integer('accounts_completed').notNull().default(0),
-    accountsFailed: integer('accounts_failed').notNull().default(0),
     coversThrough: date('covers_through'),
-    /** Coverage bookkeeping. A count would not do: the SET is what matters. */
+    /**
+     * Coverage bookkeeping. A count would not do: the SET is what matters. It
+     * also carries the counts — completed is its length, failed is
+     * `synced_accounts` minus that — so neither is stored separately.
+     *
+     * jsonb rather than a join table because there is no foreign key to be had
+     * on array elements; that trade is the reason coverage is queried with
+     * `jsonb_array_elements_text` in `reliability/coverage.ts`.
+     */
     coveredAccountIds: jsonb('covered_account_ids').notNull().default([]),
     trigger: text('trigger', { enum: ['api', 'scoring', 'scheduled', 'webhook'] })
       .notNull()
@@ -141,10 +154,7 @@ export const syncRuns = pgTable(
   },
   (t) => [
     index('sync_runs_user_started_idx').on(t.userId, t.startedAt),
-    /**
-     * This index IS the mutual exclusion for sync, not a backstop for one. Safe only
-     * because `sync/claim.ts` reclaims stale rows in the same transaction.
-     */
+    /** The mutual exclusion for sync, not a backstop for one — see `sync/claim.ts`. */
     uniqueIndex('sync_runs_one_running_per_user_idx')
       .on(t.userId)
       .where(sql`status = 'running'`),
@@ -167,9 +177,17 @@ export const scoreSnapshots = pgTable(
     inputHash: text('input_hash').notNull(),
     /** Unrecoverable later: every sync overwrites `accounts.current_balance`. */
     closingBalances: jsonb('closing_balances').$type<Record<string, string>>(),
-    categoryVersion: integer('category_version').notNull(),
+    /** The constraint that makes "a version is never deleted" true, not asserted. */
+    categoryVersion: integer('category_version')
+      .notNull()
+      .references(() => merchantCategoryVersions.version),
     dataQuality: jsonb('data_quality').notNull(),
-    syncRunId: text('sync_run_id'),
+    /**
+     * SET NULL, not the default: a run row is operational and gets cleaned up,
+     * while the snapshot is the audit record. Losing the run should cost the
+     * provenance pointer, not block the delete or take the snapshot with it.
+     */
+    syncRunId: text('sync_run_id').references(() => syncRuns.id, { onDelete: 'set null' }),
     computedAt: timestamp('computed_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

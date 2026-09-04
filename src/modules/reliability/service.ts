@@ -117,6 +117,8 @@ export class ReliabilityService {
       };
     });
 
+    // Every account, dormant included: a closed savings account's history would
+    // otherwise be misread as income.
     const accountTypes = new Map<string, AccountType>(
       gathered.accounts.map((a) => [a.id, a.type === 'savings' ? 'savings' : 'checking']),
     );
@@ -128,12 +130,10 @@ export class ReliabilityService {
 
     const modelStartedAt = performance.now();
     /**
-     * Only accounts whose balance is a real, current, EUR figure anchor the
-     * reconstruction. A dormant account's balance is frozen at whenever
-     * upstream stopped publishing it, and a null one is not zero — defaulting
-     * either would deduct up to 10 points from a live score for a number we do
-     * not have. Types above still come from every account, dormant included, or
-     * a closed savings account's history would be misread as income.
+     * Only a current, EUR, actually-reported balance anchors the reconstruction.
+     * A dormant one is frozen at whenever upstream stopped listing the account,
+     * and a null one is not zero — either would deduct up to 10 points for a
+     * figure we do not have.
      */
     const closingBalances = Object.fromEntries(
       gathered.accounts

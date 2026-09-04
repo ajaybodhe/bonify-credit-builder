@@ -341,6 +341,9 @@ describe('the pinned category version comes from a covering run', () => {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      // Snapshots reference a version, so they go first — inside the same
+      // transaction, which is rolled back either way.
+      await client.query('DELETE FROM score_snapshots');
       await client.query('DELETE FROM merchant_categories');
       await client.query('DELETE FROM merchant_category_versions');
       const c = await assessCoverage(client, USER, WINDOW);

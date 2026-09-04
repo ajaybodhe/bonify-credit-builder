@@ -32,8 +32,6 @@ export interface SyncRunTotals {
   duplicateTransactions?: number;
   amendedTransactions?: number;
   pagesFetched?: number;
-  accountsCompleted?: number;
-  accountsFailed?: number;
   categoryVersion?: number;
   syncedFrom?: string;
   coversThrough?: string;
@@ -133,13 +131,11 @@ export async function finishRun(
             duplicate_transactions = COALESCE($5, duplicate_transactions),
             amended_transactions = COALESCE($6, amended_transactions),
             pages_fetched = COALESCE($7, pages_fetched),
-            accounts_completed = COALESCE($8, accounts_completed),
-            accounts_failed = COALESCE($9, accounts_failed),
-            synced_from = COALESCE($10::date, synced_from),
-            covers_through = COALESCE($11::date, covers_through),
-            covered_account_ids = COALESCE($12::jsonb, covered_account_ids),
-            category_version = COALESCE($13, category_version),
-            error = COALESCE($14, error)
+            synced_from = COALESCE($8::date, synced_from),
+            covers_through = COALESCE($9::date, covers_through),
+            covered_account_ids = COALESCE($10::jsonb, covered_account_ids),
+            category_version = COALESCE($11, category_version),
+            error = COALESCE($12, error)
       WHERE id = $1 AND status = 'running'`,
     [
       runId,
@@ -149,8 +145,6 @@ export async function finishRun(
       totals.duplicateTransactions ?? null,
       totals.amendedTransactions ?? null,
       totals.pagesFetched ?? null,
-      totals.accountsCompleted ?? null,
-      totals.accountsFailed ?? null,
       totals.syncedFrom ?? null,
       totals.coversThrough ?? null,
       totals.coveredAccountIds ? JSON.stringify(totals.coveredAccountIds) : null,
