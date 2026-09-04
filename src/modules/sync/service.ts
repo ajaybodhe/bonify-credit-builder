@@ -5,9 +5,9 @@ import { ConflictError } from '../../lib/errors.js';
 import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import * as schema from '../../db/schema.js';
-import type { BankingTransaction } from '../../banking/types.js';
+import type { BankingAccount, BankingTransaction } from '../../banking/types.js';
 import type { CategoryResolver } from '../reliability/categories.js';
-import { SYNC_DEADLINE_MS, withSyncRun } from './claim.js';
+import { SYNC_DEADLINE_MS, withSyncRun, type SyncRunHandle } from './claim.js';
 import type { Logger } from '../../lib/logger.js';
 import { isSupportedCurrency } from '../../lib/currency.js';
 
@@ -52,6 +52,80 @@ import type { SyncResponse } from './schemas.js';
  * 4. Only accounts walked to completion go in `covered_account_ids`.
  * 5. Record the run whatever happens.
  */
+interface Reconciled {
+  /** Walkable accounts: published upstream and denominated in EUR. */
+  accounts: readonly BankingAccount[];
+  skippedAccounts: readonly BankingAccount[];
+  wentDormant: number;
+}
+
+interface WalkResult {
+  totals: { fresh: number; duplicate: number; amended: number; pages: number; skipped: number };
+  covered: string[];
+  failed: number;
+  timedOut: boolean;
+  lastError?: string;
+}
+
+/**
+ * Pure: everything degraded is already counted by the time this runs, so the
+ * response is a rendering of the results rather than another decision. Warnings
+ * exist because a caller reading only the totals cannot tell a clean run from a
+ * partial one.
+ */
+function buildSyncResponse(r: {
+  userId: string;
+  runId: string;
+  range: { from: string; to: string };
+  status: 'succeeded' | 'partial';
+  reconciled: Reconciled;
+  walk: WalkResult;
+  categoryRefreshFailed: boolean;
+}): SyncResponse {
+  const { walk, reconciled } = r;
+  const warnings: string[] = [];
+  if (walk.failed > 0) {
+    warnings.push(
+      `${String(walk.failed)} account(s) did not finish; scoring will refuse until re-synced`,
+    );
+  }
+  if (walk.timedOut) {
+    warnings.push('Sync aborted on its deadline; upstream was too slow. Retry later.');
+  }
+  if (reconciled.skippedAccounts.length > 0) {
+    warnings.push(
+      `${String(reconciled.skippedAccounts.length)} account(s) skipped as non-EUR; ` +
+        'this service does no FX conversion and scores EUR only',
+    );
+  }
+  if (walk.totals.skipped > 0) {
+    warnings.push(
+      `${String(walk.totals.skipped)} transaction(s) skipped as non-EUR; ` +
+        'they are neither converted nor counted toward the score',
+    );
+  }
+  if (r.categoryRefreshFailed) {
+    warnings.push(
+      'Merchant category dictionary could not be refreshed; scoring will ' +
+        'use the last stored version, which may be out of date',
+    );
+  }
+
+  return {
+    user_id: r.userId,
+    synced_accounts: reconciled.accounts.length,
+    new_transactions: walk.totals.fresh,
+    duplicate_transactions: walk.totals.duplicate,
+    amended_transactions: walk.totals.amended,
+    synced_from: r.range.from,
+    synced_to: r.range.to,
+    status: r.status,
+    sync_run_id: r.runId,
+    accounts_failed: walk.failed,
+    warnings,
+  };
+}
+
 export class SyncService {
   constructor(
     private readonly db: Database,
@@ -71,7 +145,8 @@ export class SyncService {
         userId,
         'api',
         async (run) => {
-          // A signal, not a page-boundary check: one page can consume the whole retry budget.
+          // A signal, not a page-boundary check: one page can consume the whole
+          // retry budget, so the deadline has to reach inside a request.
           const abort = new AbortController();
           const deadlineTimer = setTimeout(
             () => {
@@ -83,208 +158,41 @@ export class SyncService {
 
           try {
             const range = await this.banking.getDataRange();
-            const published = await this.banking.listAccounts(userId, abort.signal);
-
-            // Dropped whole, balance included: it anchors the balance reconstruction.
-            const accounts = published.filter((a) => isSupportedCurrency(a.currency));
-            const skippedAccounts = published.filter((a) => !isSupportedCurrency(a.currency));
-            for (const a of skippedAccounts) {
-              nonEurSkipped.add(1, { kind: 'account', currency: a.currency });
-            }
-            if (skippedAccounts.length > 0) {
-              this.log.warn(
-                { userId, syncRunId: run.runId, accounts: skippedAccounts.length },
-                'skipped non-EUR account(s); this service does no FX conversion',
-              );
-            }
-
-            // Drizzle rejects an empty VALUES list.
-            if (accounts.length > 0) {
-              await this.db
-                .insert(schema.accounts)
-                .values(
-                  accounts.map((a) => ({
-                    id: a.id,
-                    userId,
-                    name: a.name ?? null,
-                    type: a.type,
-                    currency: a.currency,
-                    currentBalance: a.balance.toFixed(2),
-                    lastSyncedAt: new Date(),
-                  })),
-                )
-                .onConflictDoUpdate({
-                  target: schema.accounts.id,
-                  set: {
-                    name: sql`excluded.name`,
-                    type: sql`excluded.type`,
-                    currency: sql`excluded.currency`,
-                    currentBalance: sql`excluded.current_balance`,
-                    lastSyncedAt: sql`excluded.last_synced_at`,
-                    // Republished after an absence: undo the tombstone.
-                    status: sql`'active'`,
-                  },
-                });
-            }
-
-            /**
-             * Upstream publishes no deletion signal, so absence from a
-             * SUCCESSFUL listing is the only evidence an account closed —
-             * `listAccounts` returns the whole set or throws. Marked, never
-             * deleted: the transactions and past scores stay valid.
-             */
-            const publishedIds = published.map((a) => a.id);
-            const tombstoned = await this.db.execute<{ id: string }>(
-              publishedIds.length > 0
-                ? sql`UPDATE accounts SET status = 'dormant'
-                       WHERE user_id = ${userId} AND status = 'active'
-                         AND id NOT IN (${sql.join(
-                           publishedIds.map((id) => sql`${id}`),
-                           sql`, `,
-                         )})
-                   RETURNING id`
-                : sql`UPDATE accounts SET status = 'dormant'
-                       WHERE user_id = ${userId} AND status = 'active'
-                   RETURNING id`,
+            const reconciled = await this.reconcileAccounts(userId, run, abort.signal);
+            const walk = await this.walkAccounts(
+              reconciled.accounts,
+              userId,
+              run,
+              range,
+              abort.signal,
             );
-            const wentDormant = tombstoned.rows.length;
-            if (wentDormant > 0) {
-              accountsTombstoned.add(wentDormant);
-              this.log.warn(
-                { userId, syncRunId: run.runId, accounts: wentDormant },
-                'accounts no longer published upstream; marked dormant and dropped from coverage',
-              );
-            }
+            const categories = await this.refreshCategories(userId);
 
-            const totals = { fresh: 0, duplicate: 0, amended: 0, pages: 0, skipped: 0 };
-            const covered: string[] = [];
-            let failed = 0;
-            let timedOut = false;
-            // Per RUN: the service is shared, so instance state would leak across users.
-            let lastError: string | undefined;
-
-            for (const account of accounts) {
-              if (run.isPastDeadline()) {
-                timedOut = true;
-                break;
-              }
-              try {
-                for await (const page of this.banking.streamTransactions(
-                  account.id,
-                  range,
-                  abort.signal,
-                )) {
-                  const counts = await this.writePage(page, userId, run.runId);
-                  totals.fresh += counts.fresh;
-                  totals.duplicate += counts.duplicate;
-                  totals.amended += counts.amended;
-                  totals.skipped += counts.skipped;
-                  totals.pages += 1;
-                  if (run.isPastDeadline()) {
-                    timedOut = true;
-                    break;
-                  }
-                }
-                // Invariant 4: a walk cut short by the deadline is a partial walk.
-                if (!timedOut) covered.push(account.id);
-              } catch (err) {
-                failed += 1;
-                lastError = err instanceof Error ? err.message : String(err);
-                this.log.error(
-                  { err, userId, accountId: account.id, syncRunId: run.runId },
-                  'account walk failed; it will not be marked covered',
-                );
-                syncAccountFailures.add(1, { reason: classifyFailure(err) });
-              }
-            }
-
-            if (timedOut) {
-              failed = accounts.length - covered.length;
-              lastError =
-                `Aborted after ${String(Math.round(run.elapsedMs() / 1000))}s: the sync deadline ` +
-                `passed with the Banking API still responding slowly. Retry later.`;
-            }
-
-            let categoryRefreshFailed = false;
-            try {
-              await this.categories.refreshFromUpstream();
-            } catch (err) {
-              const lost = isUniqueViolation(err);
-              categoryRefreshFailed = !lost;
-              this.log[lost ? 'debug' : 'warn'](
-                { err, userId },
-                lost
-                  ? 'category dictionary refresh lost a race; another sync stored it'
-                  : 'category dictionary refresh FAILED; scoring will use the last stored version',
-              );
-              categoryRefreshFailures.add(1, { reason: lost ? 'lost_race' : 'upstream' });
-            }
-            const categoryVersion = await this.categories.currentVersion();
-
-            const status = failed === 0 ? 'succeeded' : 'partial';
-
-            syncRunsTotal.add(1, { status, ...(timedOut && { reason: 'deadline' }) });
-            syncDuration.record((Date.now() - startedAt) / 1000, { status });
-            syncTransactionsTotal.add(totals.fresh, { outcome: 'new' });
-            syncTransactionsTotal.add(totals.duplicate, { outcome: 'duplicate' });
-            syncTransactionsTotal.add(totals.amended, { outcome: 'amended' });
-            if (totals.amended > 0) transactionAmendmentsTotal.add(totals.amended);
+            const status = walk.failed === 0 ? 'succeeded' : 'partial';
+            this.recordRunMetrics(status, walk, startedAt);
 
             await run.finish(status, {
-              ...(categoryVersion !== null && { categoryVersion }),
-              syncedAccounts: accounts.length,
-              newTransactions: totals.fresh,
-              duplicateTransactions: totals.duplicate,
-              amendedTransactions: totals.amended,
-              pagesFetched: totals.pages,
+              ...(categories.version !== null && { categoryVersion: categories.version }),
+              syncedAccounts: reconciled.accounts.length,
+              newTransactions: walk.totals.fresh,
+              duplicateTransactions: walk.totals.duplicate,
+              amendedTransactions: walk.totals.amended,
+              pagesFetched: walk.totals.pages,
               syncedFrom: range.from,
               coversThrough: range.to,
-              coveredAccountIds: covered,
-              ...(lastError ? { error: lastError } : {}),
+              coveredAccountIds: walk.covered,
+              ...(walk.lastError ? { error: walk.lastError } : {}),
             });
 
-            return {
-              user_id: userId,
-              synced_accounts: accounts.length,
-              new_transactions: totals.fresh,
-              duplicate_transactions: totals.duplicate,
-              amended_transactions: totals.amended,
-              synced_from: range.from,
-              synced_to: range.to,
+            return buildSyncResponse({
+              userId,
+              runId: run.runId,
+              range,
               status,
-              sync_run_id: run.runId,
-              accounts_failed: failed,
-              warnings: [
-                ...(failed > 0
-                  ? [
-                      `${String(failed)} account(s) did not finish; scoring will refuse until re-synced`,
-                    ]
-                  : []),
-                ...(timedOut
-                  ? ['Sync aborted on its deadline; upstream was too slow. Retry later.']
-                  : []),
-                ...(skippedAccounts.length > 0
-                  ? [
-                      `${String(skippedAccounts.length)} account(s) skipped as non-EUR; ` +
-                        'this service does no FX conversion and scores EUR only',
-                    ]
-                  : []),
-                ...(totals.skipped > 0
-                  ? [
-                      `${String(totals.skipped)} transaction(s) skipped as non-EUR; ` +
-                        'they are neither converted nor counted toward the score',
-                    ]
-                  : []),
-                // A frozen dictionary is degraded data, and degraded data must
-                // not be visible only to whoever reads the logs.
-                ...(categoryRefreshFailed
-                  ? [
-                      'Merchant category dictionary could not be refreshed; scoring will ' +
-                        'use the last stored version, which may be out of date',
-                    ]
-                  : []),
-              ],
-            };
+              reconciled,
+              walk,
+              categoryRefreshFailed: categories.failed,
+            });
           } finally {
             clearTimeout(deadlineTimer);
           }
@@ -301,6 +209,185 @@ export class SyncService {
       }
       throw err;
     }
+  }
+
+  /**
+   * Brings the local account list in line with what upstream publishes: foreign
+   * currencies dropped, the rest written back, and anything no longer listed
+   * marked dormant.
+   */
+  private async reconcileAccounts(
+    userId: string,
+    run: SyncRunHandle,
+    signal: AbortSignal,
+  ): Promise<Reconciled> {
+    const published = await this.banking.listAccounts(userId, signal);
+
+    // Dropped whole, balance included: it anchors the balance reconstruction.
+    const accounts = published.filter((a) => isSupportedCurrency(a.currency));
+    const skippedAccounts = published.filter((a) => !isSupportedCurrency(a.currency));
+    for (const a of skippedAccounts) {
+      nonEurSkipped.add(1, { kind: 'account', currency: a.currency });
+    }
+    if (skippedAccounts.length > 0) {
+      this.log.warn(
+        { userId, syncRunId: run.runId, accounts: skippedAccounts.length },
+        'skipped non-EUR account(s); this service does no FX conversion',
+      );
+    }
+
+    // Drizzle rejects an empty VALUES list.
+    if (accounts.length > 0) {
+      await this.db
+        .insert(schema.accounts)
+        .values(
+          accounts.map((a) => ({
+            id: a.id,
+            userId,
+            name: a.name ?? null,
+            type: a.type,
+            currency: a.currency,
+            currentBalance: a.balance.toFixed(2),
+            lastSyncedAt: new Date(),
+          })),
+        )
+        .onConflictDoUpdate({
+          target: schema.accounts.id,
+          set: {
+            name: sql`excluded.name`,
+            type: sql`excluded.type`,
+            currency: sql`excluded.currency`,
+            currentBalance: sql`excluded.current_balance`,
+            lastSyncedAt: sql`excluded.last_synced_at`,
+            // Republished after an absence: undo the tombstone.
+            status: sql`'active'`,
+          },
+        });
+    }
+
+    /**
+     * Upstream publishes no deletion signal, so absence from a SUCCESSFUL
+     * listing is the only evidence an account closed — `listAccounts` returns
+     * the whole set or throws. Marked, never deleted: the transactions and past
+     * scores stay valid.
+     */
+    const publishedIds = published.map((a) => a.id);
+    const tombstoned = await this.db.execute<{ id: string }>(
+      publishedIds.length > 0
+        ? sql`UPDATE accounts SET status = 'dormant'
+               WHERE user_id = ${userId} AND status = 'active'
+                 AND id NOT IN (${sql.join(
+                   publishedIds.map((id) => sql`${id}`),
+                   sql`, `,
+                 )})
+           RETURNING id`
+        : sql`UPDATE accounts SET status = 'dormant'
+               WHERE user_id = ${userId} AND status = 'active'
+           RETURNING id`,
+    );
+    const wentDormant = tombstoned.rows.length;
+    if (wentDormant > 0) {
+      accountsTombstoned.add(wentDormant);
+      this.log.warn(
+        { userId, syncRunId: run.runId, accounts: wentDormant },
+        'accounts no longer published upstream; marked dormant and dropped from coverage',
+      );
+    }
+
+    return { accounts, skippedAccounts, wentDormant };
+  }
+
+  /**
+   * Walks every account's whole range, committing per page. A failure is scoped
+   * to its account: the others still complete, and only accounts walked to the
+   * end are reported as covered.
+   */
+  private async walkAccounts(
+    accounts: readonly BankingAccount[],
+    userId: string,
+    run: SyncRunHandle,
+    range: { from: string; to: string },
+    signal: AbortSignal,
+  ): Promise<WalkResult> {
+    const totals = { fresh: 0, duplicate: 0, amended: 0, pages: 0, skipped: 0 };
+    const covered: string[] = [];
+    let failed = 0;
+    let timedOut = false;
+    let lastError: string | undefined;
+
+    for (const account of accounts) {
+      if (run.isPastDeadline()) {
+        timedOut = true;
+        break;
+      }
+      try {
+        for await (const page of this.banking.streamTransactions(account.id, range, signal)) {
+          const counts = await this.writePage(page, userId, run.runId);
+          totals.fresh += counts.fresh;
+          totals.duplicate += counts.duplicate;
+          totals.amended += counts.amended;
+          totals.skipped += counts.skipped;
+          totals.pages += 1;
+          if (run.isPastDeadline()) {
+            timedOut = true;
+            break;
+          }
+        }
+        // Invariant 4: a walk cut short by the deadline is a partial walk.
+        if (!timedOut) covered.push(account.id);
+      } catch (err) {
+        failed += 1;
+        lastError = err instanceof Error ? err.message : String(err);
+        this.log.error(
+          { err, userId, accountId: account.id, syncRunId: run.runId },
+          'account walk failed; it will not be marked covered',
+        );
+        syncAccountFailures.add(1, { reason: classifyFailure(err) });
+      }
+    }
+
+    if (timedOut) {
+      failed = accounts.length - covered.length;
+      lastError =
+        `Aborted after ${String(Math.round(run.elapsedMs() / 1000))}s: the sync deadline ` +
+        `passed with the Banking API still responding slowly. Retry later.`;
+    }
+
+    return { totals, covered, failed, timedOut, ...(lastError !== undefined && { lastError }) };
+  }
+
+  /**
+   * Refreshed here because this path is already talking to the Banking API.
+   * A failure is not fatal — scoring falls back to the last stored version —
+   * but it is reported, because a frozen dictionary is degraded data.
+   */
+  private async refreshCategories(
+    userId: string,
+  ): Promise<{ version: number | null; failed: boolean }> {
+    let failed = false;
+    try {
+      await this.categories.refreshFromUpstream();
+    } catch (err) {
+      const lost = isUniqueViolation(err);
+      failed = !lost;
+      this.log[lost ? 'debug' : 'warn'](
+        { err, userId },
+        lost
+          ? 'category dictionary refresh lost a race; another sync stored it'
+          : 'category dictionary refresh FAILED; scoring will use the last stored version',
+      );
+      categoryRefreshFailures.add(1, { reason: lost ? 'lost_race' : 'upstream' });
+    }
+    return { version: await this.categories.currentVersion(), failed };
+  }
+
+  private recordRunMetrics(status: 'succeeded' | 'partial', walk: WalkResult, startedAt: number) {
+    syncRunsTotal.add(1, { status, ...(walk.timedOut && { reason: 'deadline' }) });
+    syncDuration.record((Date.now() - startedAt) / 1000, { status });
+    syncTransactionsTotal.add(walk.totals.fresh, { outcome: 'new' });
+    syncTransactionsTotal.add(walk.totals.duplicate, { outcome: 'duplicate' });
+    syncTransactionsTotal.add(walk.totals.amended, { outcome: 'amended' });
+    if (walk.totals.amended > 0) transactionAmendmentsTotal.add(walk.totals.amended);
   }
 
   private async writePage(
