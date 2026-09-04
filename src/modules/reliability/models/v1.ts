@@ -68,8 +68,8 @@ export const MODEL = {
   },
 
   /**
-   * Undefined in the brief. Here: a month with income AND an essential payment
-   * AND no fee event. Reported, never scored, so it cannot double-count A-D.
+   * A month with income AND an essential payment AND no fee event. Reported,
+   * never scored, so it cannot double-count A-D.
    */
   goodMonth: GOOD_MONTH,
 
@@ -91,8 +91,8 @@ export function computeReliabilityIndex(input: ScoringInput): ScoringResult {
   const isIncome = (t: (typeof active)[number]) =>
     t.isCredit &&
     !transfers.excludedFromIncome.has(t.id) &&
-    // The brief: a month has income if a transaction is categorised income "or is a
-    // credit". A bare credit counts because thin-file users are paid irregularly.
+    // A month has income if a transaction is categorised income, or is simply a
+    // credit. The bare credit counts because thin-file users are paid irregularly.
     (t.category === null || !categories.savings.includes(t.category));
 
   const isSpend = (t: (typeof active)[number]) =>

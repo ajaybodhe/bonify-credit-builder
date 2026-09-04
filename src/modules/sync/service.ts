@@ -45,11 +45,9 @@ import {
 import type { SyncResponse } from './schemas.js';
 
 /**
- * Pulls one user's accounts and transactions into the local store. Invariants,
- * reasoned through in docs/architecture-design.md §4.4-4.6:
+ * Pulls one user's accounts and transactions into the local store.
  * 1. Dedupe compares `content_hash` rather than DO NOTHING — banks amend.
- * 2. Both are re-read in full every run; no incremental mode, because an
- *    amendment only shows up on a row re-read.
+ * 2. Both are re-read in full every run; no incremental mode.
  * 3. Commit per page: a crash on page 40 keeps pages 1-39.
  * 4. Only accounts walked to completion go in `covered_account_ids`.
  * 5. Record the run whatever happens.
