@@ -6,7 +6,7 @@ import type { BankingApiClient } from '../../src/banking/client.js';
 import type { Env } from '../../src/config/env.js';
 import type { Database } from '../../src/db/client.js';
 import * as schema from '../../src/db/schema.js';
-import { testPool } from '../helpers/db.js';
+import { testDatabaseUrl, testPool } from '../helpers/db.js';
 
 /**
  * Integration tier: the readiness probe's one real boundary is the database.
@@ -22,7 +22,7 @@ const env = {
   LOG_LEVEL: 'silent',
   BANKING_API_BASE_URL: 'http://fake.invalid',
   BANKING_API_KEY: 'k',
-  DATABASE_URL: process.env['DATABASE_URL'] ?? '',
+  DATABASE_URL: testDatabaseUrl(),
   DATABASE_POOL_MAX: 2,
 } as unknown as Env;
 

@@ -185,6 +185,13 @@ reasoning, worked examples, and an honest account of what the model cannot see.
 
 Stated plainly, so none of it has to be discovered.
 
+**Tests use their own database.** `TEST_DATABASE_URL` (created by
+`scripts/setup.sh`, and already separate in CI). The suites write real rows
+through the real service, so they cannot be wrapped in a transaction and rolled
+back — and sharing one database is not safe: transaction ids are the primary
+key, and the e2e fake mints the same `txn_00001` shapes the live provider does,
+so an e2e sync upserts straight over development data.
+
 **Not run on this machine.** Development was on macOS 12.4, which no current
 container runtime supports, so the Docker image has never been built here.
 Postgres runs natively (Postgres.app, port 5433 — the version and port the

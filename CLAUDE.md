@@ -80,8 +80,14 @@ model, and only `db/` knows SQL.**
   one real boundary; e2e = properties spanning layers; contract = assumptions
   about the live upstream. Reconstruction and re-derivability are both
   integration — the e2e tier proves the endpoints work end to end, not the audit.
+- **Tests run against `TEST_DATABASE_URL`, never the dev database**, and reach it
+  only through `tests/helpers/db.ts`. A sync opens its own transactions, so a
+  test cannot roll one back; isolation comes from the database. Transaction ids
+  are the primary key and are not scoped by user, so a shared database lets an
+  e2e sync upsert over real rows.
 - `tests/helpers/fake-banking-api.ts` deliberately reproduces the upstream's
-  hostile pagination. Do not "fix" it into tidy ordering.
+  hostile pagination. Do not "fix" it into tidy ordering. Its ids are
+  `faketxn_`-prefixed so they cannot collide with the provider's.
 - Fill in the `it.todo` cases rather than inventing a parallel set.
 - When implementing a stub, delete both the `TODO(...)` and the
   `throw new Error('Not implemented: ...')`.

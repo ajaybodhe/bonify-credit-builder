@@ -354,9 +354,12 @@ export class SyncService {
         .onConflictDoUpdate({
           target: schema.transactions.id,
           set: {
-            // `accountId` and `currency` are in the digest, so they must be
-            // writable here too — detecting a change we then refuse to apply
-            // would leave the row permanently disagreeing with its own hash.
+            // Every identifying field moves together. `id` is the upstream id and
+            // the whole primary key, so a conflict can in principle arrive under a
+            // different account or user; updating some of those and not the others
+            // leaves a row that belongs to nobody consistently — and a later
+            // delete-by-owner then takes rows it does not own with it.
+            userId: sql`excluded.user_id`,
             accountId: sql`excluded.account_id`,
             currency: sql`excluded.currency`,
             amount: sql`excluded.amount`,

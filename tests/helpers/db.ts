@@ -1,10 +1,31 @@
 import pg from 'pg';
 
-/** A pool pointed at the integration/e2e database. Caller owns shutdown. */
+/**
+ * A pool pointed at the TEST database. Caller owns shutdown.
+ *
+ * These suites write real rows through the real service — a sync opens its own
+ * transactions on its own pool, so a test cannot wrap them in one and roll back.
+ * Isolation therefore has to come from the database, not the transaction.
+ *
+ * That matters more than it sounds. Transaction ids are the primary key and are
+ * not scoped by user, and the fake and the live provider both mint `txn_00001`
+ * shapes, so an e2e sync pointed at a database holding real data upserts
+ * straight over it. That is not hypothetical: it silently ate 33 of
+ * `user_1001`'s transactions and moved its score from 62 to 48.
+ *
+ * `TEST_DATABASE_URL` keeps the two apart. CI already runs against a dedicated
+ * Postgres service, so it needs no second variable and falls back cleanly.
+ */
+export function testDatabaseUrl(): string {
+  const connectionString = process.env['TEST_DATABASE_URL'] ?? process.env['DATABASE_URL'];
+  if (!connectionString) {
+    throw new Error('Set TEST_DATABASE_URL (or DATABASE_URL in CI) to run these tests');
+  }
+  return connectionString;
+}
+
 export function testPool(): pg.Pool {
-  const connectionString = process.env['DATABASE_URL'];
-  if (!connectionString) throw new Error('DATABASE_URL must be set for integration tests');
-  return new pg.Pool({ connectionString, max: 8 });
+  return new pg.Pool({ connectionString: testDatabaseUrl(), max: 8 });
 }
 
 /**

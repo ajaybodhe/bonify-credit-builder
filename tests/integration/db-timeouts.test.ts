@@ -3,13 +3,15 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { createDatabase } from '../../src/db/client.js';
 import { ConflictError } from '../../src/lib/errors.js';
 import { SYNC_RECLAIM_AFTER_MS, withSyncRun } from '../../src/modules/sync/claim.js';
-import { testPool } from '../helpers/db.js';
+import { testDatabaseUrl, testPool } from '../helpers/db.js';
 
 /**
  * Integration tier: these are assertions about how POSTGRES behaves under our
  * settings. A mock would only prove the mock times out.
  */
-const url = process.env['DATABASE_URL'] ?? '';
+// Through the helper, not process.env: a second URL here would silently point
+// half this file at a different database from the pool it asserts against.
+const url = testDatabaseUrl();
 const envFor = (max = 4) => ({ DATABASE_URL: url, DATABASE_POOL_MAX: max }) as never;
 
 const pool = testPool();

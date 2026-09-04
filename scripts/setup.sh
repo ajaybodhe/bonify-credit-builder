@@ -111,10 +111,24 @@ fi
 
 grep -q "^DATABASE_URL=" .env 2>/dev/null || echo "DATABASE_URL=${DB_URL}" >> .env
 
+# The suites write real rows through the real service, so they cannot be wrapped
+# in a transaction and rolled back. They get their own database instead: sharing
+# one means an e2e sync upserts over development data, because transaction ids
+# are the primary key and the fake mints the same shapes the live provider does.
+TEST_DB_URL="${DB_URL}_test"
+grep -q "^TEST_DATABASE_URL=" .env 2>/dev/null || echo "TEST_DATABASE_URL=${TEST_DB_URL}" >> .env
+
 # ---------------------------------------------------------- 5. Migrate
 bold "4. Schema"
 DATABASE_URL="${DB_URL}" npm run db:migrate >/dev/null
 ok "migrations applied"
+
+psql "${DB_URL%/*}/postgres" -tAc \
+  "SELECT 1 FROM pg_database WHERE datname='${TEST_DB_URL##*/}'" 2>/dev/null | grep -q 1 \
+  || psql "${DB_URL%/*}/postgres" -qc "CREATE DATABASE ${TEST_DB_URL##*/}" 2>/dev/null || true
+DATABASE_URL="${TEST_DB_URL}" npm run db:migrate >/dev/null 2>&1 \
+  && ok "test database ready" \
+  || warn "could not prepare the test database; tests will fall back to DATABASE_URL"
 
 bold "Ready"
 echo "  npm run dev                 start the service on :3000"

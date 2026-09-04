@@ -129,7 +129,9 @@ export function buildTransactions(accountId: string, count: number, startDate = 
     const day = new Date(start + i * 86_400_000).toISOString().slice(0, 10);
     const credit = i % 7 === 0;
     return {
-      id: `txn_${String(i).padStart(5, '0')}`,
+      // Namespaced: the real provider uses `txn_00000`-style ids, and a test
+      // sharing a database with real data would otherwise upsert straight over it.
+      id: `faketxn_${String(i).padStart(5, '0')}`,
       account_id: accountId,
       amount: credit ? 1200 : -Number((10 + (i % 40)).toFixed(2)),
       currency: 'EUR',

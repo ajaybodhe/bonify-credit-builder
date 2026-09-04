@@ -6,7 +6,7 @@ import type { BankingApiClient } from '../../src/banking/client.js';
 import type { Env } from '../../src/config/env.js';
 import type { Database } from '../../src/db/client.js';
 import * as schema from '../../src/db/schema.js';
-import { testPool } from '../helpers/db.js';
+import { testDatabaseUrl, testPool } from '../helpers/db.js';
 
 /**
  * The wire contract, asserted through the real app.
@@ -38,7 +38,7 @@ const env = {
   BANKING_API_TIMEOUT_MS: 500,
   BANKING_API_MAX_RETRIES: 0,
   TRUST_PROXY: false,
-  DATABASE_URL: process.env['DATABASE_URL'] ?? '',
+  DATABASE_URL: testDatabaseUrl(),
   DATABASE_POOL_MAX: 3,
 } as unknown as Env;
 

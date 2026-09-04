@@ -8,7 +8,7 @@ import type { Env } from '../../src/config/env.js';
 import type { Database } from '../../src/db/client.js';
 import * as schema from '../../src/db/schema.js';
 import { FakeBankingApi, buildTransactions } from '../helpers/fake-banking-api.js';
-import { isolateDictionary, testPool } from '../helpers/db.js';
+import { isolateDictionary, testDatabaseUrl, testPool } from '../helpers/db.js';
 
 /**
  * E2E tier: the whole app via `app.inject()`, real Postgres, and the Banking
@@ -83,7 +83,7 @@ const env = {
   BANKING_API_TIMEOUT_MS: 1000,
   BANKING_API_MAX_RETRIES: 0,
   BANKING_API_PAGE_SIZE: 100,
-  DATABASE_URL: process.env['DATABASE_URL'] ?? '',
+  DATABASE_URL: testDatabaseUrl(),
   DATABASE_POOL_MAX: 4,
 } as unknown as Env;
 
