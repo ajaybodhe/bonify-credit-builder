@@ -101,12 +101,111 @@ export function computeReliabilityIndex(input: ScoringInput): ScoringResult {
   const inGroup = (t: (typeof active)[number], group: readonly string[]) =>
     t.category !== null && group.includes(t.category);
 
-  // ---- A. Income regularity ------------------------------------------------
-  const monthsWithIncome = new Set(active.filter(isIncome).map((t) => yearMonth(t.bookedAt)));
-  const incomeRegularity = monthsWithIncome.size / window.months.length;
-  const pointsA = Math.round(incomeRegularity * MODEL.incomeRegularity.maxPoints);
+  const a = incomeRegularity(active, isIncome, window);
+  const b = incomeCoverage(active, isIncome, isSpend, inGroup, categories);
+  const c = essentialConsistency(active, isSpend, inGroup, categories, window);
+  const d = resilience(active, isSpend, inGroup, {
+    transfers,
+    categories,
+    closingBalances,
+    window,
+    totalIncome: b.totalIncome,
+  });
 
-  // ---- B. Income coverage --------------------------------------------------
+  const pointsA = a.points;
+  const pointsB = b.points;
+  const pointsC = c.points;
+  const pointsD = d.points;
+  const { incomeRegularity: incomeRegularityRatio, monthsWithIncome } = a;
+  const { coverageRatio, coverageUndefined } = b;
+  const {
+    essentialConsistency: essentialConsistencyRatio,
+    essentialCategoryMonths,
+    possibleCategoryMonths,
+  } = c;
+  const { savingsPoints, negativeBalancePoints, lateFeePoints, highRiskPoints } = d.breakdown;
+  const { netSavings, savingsRate, negativeBalanceDays, feeEvents, highRiskShare } = d;
+
+  const goodMonths = countGoodMonths(
+    active,
+    isSpend,
+    inGroup,
+    categories,
+    window,
+    monthsWithIncome,
+  );
+
+  const index = clamp(Math.round(pointsA + pointsB + pointsC + pointsD), 0, 100);
+
+  const components: ScoreComponents = {
+    income_regularity_points: pointsA,
+    income_coverage_points: round2(pointsB),
+    essential_consistency_points: pointsC,
+    resilience_points: round2(pointsD),
+    resilience_breakdown: {
+      savings: round2(savingsPoints),
+      negative_balance: round2(negativeBalancePoints),
+      late_fees: round2(lateFeePoints),
+      high_risk: round2(highRiskPoints),
+    },
+    transfers_excluded_from_income: transfers.excludedFromIncome.size,
+    net_savings: (netSavings / 100).toFixed(2),
+  };
+
+  const metrics: Metrics = {
+    income_regularity: round2(incomeRegularityRatio),
+    income_coverage_ratio: round2(coverageRatio),
+    essential_payments_consistency: round2(essentialConsistencyRatio),
+    good_months: goodMonths,
+    negative_balance_days: negativeBalanceDays,
+    late_fee_events: feeEvents,
+  };
+
+  return {
+    model_version: VERSION,
+    reliability_index: index,
+    score_band: bandFor(index),
+    metrics,
+    components,
+    drivers: buildDrivers({
+      monthsWithIncome: monthsWithIncome.size,
+      totalMonths: window.months.length,
+      coverageRatio,
+      coverageUndefined,
+      essentialCategoryMonths: essentialCategoryMonths.size,
+      possibleCategoryMonths,
+      savingsRate,
+      negativeBalanceDays,
+      feeEvents,
+      highRiskShare,
+      transfersExcluded: transfers.excludedFromIncome.size,
+    }),
+  };
+}
+
+type Txn = ScoringInput['transactions'][number];
+type Predicate = (t: Txn) => boolean;
+type InGroup = (t: Txn, group: readonly string[]) => boolean;
+
+/** A) How many of the six months saw money arrive at all. */
+function incomeRegularity(active: readonly Txn[], isIncome: Predicate, window: ScoringWindow) {
+  const monthsWithIncome = new Set(active.filter(isIncome).map((t) => yearMonth(t.bookedAt)));
+  const ratio = monthsWithIncome.size / window.months.length;
+  return {
+    monthsWithIncome,
+    incomeRegularity: ratio,
+    points: Math.round(ratio * MODEL.incomeRegularity.maxPoints),
+  };
+}
+
+/** B) Income against essential spend, on the diminishing-returns curve. */
+function incomeCoverage(
+  active: readonly Txn[],
+  isIncome: Predicate,
+  isSpend: Predicate,
+  inGroup: InGroup,
+  categories: ScoringInput['categories'],
+) {
   const totalIncome = active
     .filter(isIncome)
     .reduce((sum, t) => sum + Math.abs(cents(t.amount)), 0);
@@ -118,8 +217,22 @@ export function computeReliabilityIndex(input: ScoringInput): ScoringResult {
   // is pinned to break-even and one `interpolate` call covers both cases.
   const coverageUndefined = totalEssential === 0;
   const coverageRatio = coverageUndefined ? 1 : totalIncome / totalEssential;
-  const pointsB = interpolate(coverageRatio, MODEL.incomeCoverage.breakpoints);
+  return {
+    totalIncome,
+    coverageUndefined,
+    coverageRatio,
+    points: interpolate(coverageRatio, MODEL.incomeCoverage.breakpoints),
+  };
+}
 
+/** C) How many essential category-months are actually present. */
+function essentialConsistency(
+  active: readonly Txn[],
+  isSpend: Predicate,
+  inGroup: InGroup,
+  categories: ScoringInput['categories'],
+  window: ScoringWindow,
+) {
   // The denominator is every essential category the dictionary defines, not only
   // those this applicant used — the model's sharpest fairness weakness, see docs.
   const essentialCategoryMonths = new Set(
@@ -128,9 +241,30 @@ export function computeReliabilityIndex(input: ScoringInput): ScoringResult {
       .map((t) => `${t.category ?? ''}:${yearMonth(t.bookedAt)}`),
   );
   const possibleCategoryMonths = window.months.length * categories.essential.length;
-  const essentialConsistency =
+  const ratio =
     possibleCategoryMonths === 0 ? 0 : essentialCategoryMonths.size / possibleCategoryMonths;
-  const pointsC = Math.round(essentialConsistency * MODEL.essentialConsistency.maxPoints);
+  return {
+    essentialCategoryMonths,
+    possibleCategoryMonths,
+    essentialConsistency: ratio,
+    points: Math.round(ratio * MODEL.essentialConsistency.maxPoints),
+  };
+}
+
+/** D) The four strain-and-cushion signals, summed then clamped. */
+function resilience(
+  active: readonly Txn[],
+  isSpend: Predicate,
+  inGroup: InGroup,
+  ctx: {
+    transfers: ScoringInput['transfers'];
+    categories: ScoringInput['categories'];
+    closingBalances: ScoringInput['closingBalances'];
+    window: ScoringWindow;
+    totalIncome: number;
+  },
+) {
+  const { transfers, categories, closingBalances, window, totalIncome } = ctx;
 
   const savingsIn = active
     .filter((t) => transfers.savingsInIds.has(t.id))
@@ -166,13 +300,30 @@ export function computeReliabilityIndex(input: ScoringInput): ScoringResult {
     Math.min(1, highRiskShare / MODEL.resilience.highRisk.fullPenaltyShare) *
     MODEL.resilience.highRisk.maxPenalty;
 
-  const pointsD = clamp(
-    savingsPoints + negativeBalancePoints + lateFeePoints + highRiskPoints,
-    MODEL.resilience.min,
-    MODEL.resilience.max,
-  );
+  return {
+    netSavings,
+    savingsRate,
+    negativeBalanceDays,
+    feeEvents,
+    highRiskShare,
+    breakdown: { savingsPoints, negativeBalancePoints, lateFeePoints, highRiskPoints },
+    points: clamp(
+      savingsPoints + negativeBalancePoints + lateFeePoints + highRiskPoints,
+      MODEL.resilience.min,
+      MODEL.resilience.max,
+    ),
+  };
+}
 
-  // Reported, never scored: it reuses signals A, C and D already use.
+/** Reported, never scored: it reuses signals A, C and D already use. */
+function countGoodMonths(
+  active: readonly Txn[],
+  isSpend: Predicate,
+  inGroup: InGroup,
+  categories: ScoringInput['categories'],
+  window: ScoringWindow,
+  monthsWithIncome: ReadonlySet<string>,
+): number {
   const monthsWithEssential = new Set(
     active
       .filter((t) => isSpend(t) && inGroup(t, categories.essential))
@@ -181,59 +332,12 @@ export function computeReliabilityIndex(input: ScoringInput): ScoringResult {
   const monthsWithFees = new Set(
     active.filter((t) => inGroup(t, categories.fees)).map((t) => yearMonth(t.bookedAt)),
   );
-  const goodMonths = window.months.filter(
+  return window.months.filter(
     (m) =>
       (!MODEL.goodMonth.requiresIncome || monthsWithIncome.has(m)) &&
       (!MODEL.goodMonth.requiresEssentialPayment || monthsWithEssential.has(m)) &&
       (MODEL.goodMonth.allowsFeeEvents || !monthsWithFees.has(m)),
   ).length;
-
-  const index = clamp(Math.round(pointsA + pointsB + pointsC + pointsD), 0, 100);
-
-  const components: ScoreComponents = {
-    income_regularity_points: pointsA,
-    income_coverage_points: round2(pointsB),
-    essential_consistency_points: pointsC,
-    resilience_points: round2(pointsD),
-    resilience_breakdown: {
-      savings: round2(savingsPoints),
-      negative_balance: round2(negativeBalancePoints),
-      late_fees: round2(lateFeePoints),
-      high_risk: round2(highRiskPoints),
-    },
-    transfers_excluded_from_income: transfers.excludedFromIncome.size,
-    net_savings: (netSavings / 100).toFixed(2),
-  };
-
-  const metrics: Metrics = {
-    income_regularity: round2(incomeRegularity),
-    income_coverage_ratio: round2(coverageRatio),
-    essential_payments_consistency: round2(essentialConsistency),
-    good_months: goodMonths,
-    negative_balance_days: negativeBalanceDays,
-    late_fee_events: feeEvents,
-  };
-
-  return {
-    model_version: VERSION,
-    reliability_index: index,
-    score_band: bandFor(index),
-    metrics,
-    components,
-    drivers: buildDrivers({
-      monthsWithIncome: monthsWithIncome.size,
-      totalMonths: window.months.length,
-      coverageRatio,
-      coverageUndefined,
-      essentialCategoryMonths: essentialCategoryMonths.size,
-      possibleCategoryMonths,
-      savingsRate,
-      negativeBalanceDays,
-      feeEvents,
-      highRiskShare,
-      transfersExcluded: transfers.excludedFromIncome.size,
-    }),
-  };
 }
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;

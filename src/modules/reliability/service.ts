@@ -63,11 +63,11 @@ export class ReliabilityService {
       );
 
       /**
-       * The provider reports ONE undated balance that does not reconcile with the
-       * transactions it publishes: `acc_1001_chk` reads €2,450 while carrying +€8,749
-       * of net inflow after the window closes. Rolling it back over that movement
-       * drives it to −€14,712, so it is anchored at the window end and
-       * `negative_balance_days` is documented as an estimate.
+       * The provider reports one balance with no date, and it does not reconcile
+       * with the transactions it publishes. So the balance is anchored at the
+       * window's end and the series walked backwards from there — rolling it
+       * back over later movement produces implausibly negative balances. That is
+       * why `negative_balance_days` is an estimate, not an observation.
        */
       const { rows: accountRows } = await client.query<{
         id: string;

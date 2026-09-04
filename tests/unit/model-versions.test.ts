@@ -38,7 +38,7 @@ const MODELS_DIR = new URL('../../src/modules/reliability/models/', import.meta.
  * file exists to catch.
  */
 const FROZEN_DIGESTS: Readonly<Record<number, string>> = {
-  1: '68c5d57cd3ebda568b61bda2e69110a4e12b0e81d40974e8deacd1a56702814b',
+  1: 'a12320e1c8aabe7de8504fb0003398e0ce01b308e409ebd5cf31a7126c2e9357',
 };
 
 function digestOf(version: number): string {

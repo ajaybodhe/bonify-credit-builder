@@ -4,7 +4,7 @@ import type { ScoredTransaction } from './scoring.js';
  * Classifies movements between a user's own accounts, so they are neither income
  * nor spending, and saving is credited only on money moving *into* savings.
  * The provider reports an internal transfer as a SINGLE-SIDED credit on the
- * receiving account (verified against `acc_1001_sav`), so the risk is phantom
+ * receiving account — verified against live provider data — so the risk is phantom
  * income and there is no second leg to link:
  *   credit into a `savings` account   → SAVINGS, never income
  *   debit out of a `savings` account  → DIS-SAVING, never spend
