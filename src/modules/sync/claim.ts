@@ -4,17 +4,21 @@ import { ConflictError } from '../../lib/errors.js';
 import { syncRunsReclaimedTotal } from '../../telemetry/metrics.js';
 
 /**
- * Claims the right to sync a user by INSERTing the `sync_runs` row and letting
- * the database arbitrate. The partial unique index on (user_id) WHERE running IS
- * the mutual exclusion: `INSERT ... WHERE NOT EXISTS` would read the MVCC
- * snapshot, miss a concurrent uncommitted row and admit both. The claim commits
- * before any upstream work, or a competitor blocks instead of failing fast.
+ * Only one sync per user at a time, and the database decides — not us.
+ *
+ * The claim is an INSERT, and a partial unique index (one `running` row per
+ * user) rejects the second one. Checking first would not work: `INSERT ...
+ * WHERE NOT EXISTS` reads its own snapshot, cannot see a competitor that has
+ * not committed yet, and lets both through. The claim commits before any
+ * upstream call, so the loser fails fast rather than waiting on a long
+ * transaction.
  */
 
 /**
- * Enforced from BOTH sides: the run aborts itself at a page boundary, and the
- * next claim reclaims any `running` row older than deadline + grace — so
- * reclamation only ever finds rows whose owner is genuinely gone.
+ * How long a sync may run, enforced twice over: the run stops itself at a page
+ * boundary once it is past, and the next claim takes over any `running` row
+ * older than the deadline plus the grace period. Because a live run always
+ * stops first, a takeover only ever finds a run whose process is gone.
  */
 export const SYNC_DEADLINE_MS = 600_000;
 export const SYNC_RECLAIM_GRACE_MS = 60_000;
