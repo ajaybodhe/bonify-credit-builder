@@ -13,8 +13,7 @@ import type { ScoredTransaction } from './scoring.js';
  * That is deliberate: the storage decisions it depends on (never deleting,
  * archiving before overwrite, dating every row) had to be made while the schema
  * was being written, not retrofitted afterwards, and a rebuild that is never run
- * is a claim rather than a guarantee. The endpoint that would expose it is in
- * docs/discussion-topics.md; it is not in scope here.
+ * is a claim rather than a guarantee. Exposing it as an endpoint is out of scope.
  */
 
 export interface HistoricalTransaction {

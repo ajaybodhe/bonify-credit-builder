@@ -209,14 +209,6 @@ build caused by someone else's outage teaches people to ignore red builds.
   structured logs work, but no collector config ships and no exporter endpoint
   is set, so the SDK never starts. No dashboards, no alerting.
 
-## Discussion topics
-
-**[`docs/discussion-topics.md`](docs/discussion-topics.md)** — positions on API
-evolution, data ownership, consistency, scalability, sync strategy, caching,
-auditability, fairness, and incident response.
-
----
-
 ## AI usage disclosure
 
 1. **Claude Code (Opus 5)** was used throughout the SDLC.
