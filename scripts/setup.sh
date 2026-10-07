@@ -86,7 +86,29 @@ fi
 bold "3. PostgreSQL 17 on :${PORT}"
 pg_up() { (exec 3<>"/dev/tcp/127.0.0.1/${PORT}") 2>/dev/null; }
 
+# Postgres.app does not put its client tools on PATH, and the fallback keeps the
+# checks below from silently passing on a machine that simply has no psql.
+PSQL=$(command -v psql || true)
+for v in 17 16; do
+  [ -n "$PSQL" ] && break
+  [ -x "/Applications/Postgres.app/Contents/Versions/$v/bin/psql" ] &&
+    PSQL="/Applications/Postgres.app/Contents/Versions/$v/bin/psql"
+done
+
+# A listener is not this project's cluster. Two clusters cannot share a port, so
+# another project's Postgres holding :5433 makes every later step fail — and it
+# fails deep inside the migration, as a role error with a stack trace, which
+# reads like a bug in the service rather than a busy port.
+pg_ours() { [ -n "$PSQL" ] && "$PSQL" "${DB_URL%/*}/postgres" -tAc 'SELECT 1' >/dev/null 2>&1; }
+
 if pg_up; then
+  if [ -n "$PSQL" ] && ! pg_ours; then
+    die "Something is listening on :${PORT}, but it is not this project's cluster:
+      connecting to it as '${DB_USER}' fails. Another Postgres is holding the
+      port. Find it, stop it, and re-run this script:
+        lsof -nP -iTCP:${PORT} -sTCP:LISTEN
+        pg_ctl -D <its data directory> -m fast stop"
+  fi
   ok "already listening on :${PORT}"
 elif [ -d /Applications/Postgres.app ]; then
   BIN=/Applications/Postgres.app/Contents/Versions/17/bin
@@ -123,9 +145,13 @@ bold "4. Schema"
 DATABASE_URL="${DB_URL}" npm run db:migrate >/dev/null
 ok "migrations applied"
 
-psql "${DB_URL%/*}/postgres" -tAc \
-  "SELECT 1 FROM pg_database WHERE datname='${TEST_DB_URL##*/}'" 2>/dev/null | grep -q 1 \
-  || psql "${DB_URL%/*}/postgres" -qc "CREATE DATABASE ${TEST_DB_URL##*/}" 2>/dev/null || true
+if [ -n "$PSQL" ]; then
+  "$PSQL" "${DB_URL%/*}/postgres" -tAc \
+    "SELECT 1 FROM pg_database WHERE datname='${TEST_DB_URL##*/}'" 2>/dev/null | grep -q 1 \
+    || "$PSQL" "${DB_URL%/*}/postgres" -qc "CREATE DATABASE ${TEST_DB_URL##*/}" 2>/dev/null || true
+else
+  warn "no psql found; create ${TEST_DB_URL##*/} by hand if the next step warns"
+fi
 DATABASE_URL="${TEST_DB_URL}" npm run db:migrate >/dev/null 2>&1 \
   && ok "test database ready" \
   || warn "could not prepare the test database; tests will fall back to DATABASE_URL"
