@@ -1,6 +1,6 @@
 import { drizzle } from 'drizzle-orm/node-postgres';
 import type { FastifyInstance } from 'fastify';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../../src/app.js';
 import { NotFoundError } from '../../src/lib/errors.js';
 import type { BankingApiClient } from '../../src/banking/client.js';
@@ -35,6 +35,21 @@ const UNKNOWN = 'user_e2e_missing';
 
 const fake = new FakeBankingApi(buildTransactions(ACCOUNT, 120, '2025-09-01'));
 
+/**
+ * Mutable so a test can publish a second dictionary without re-wiring the fake.
+ * `buildTransactions` only ever emits 9001 and 5411, so regrouping 5411 is the
+ * one edit that reaches every debit the fixture produces.
+ */
+const BASELINE_CATEGORIES = [
+  { code: '9001', name: 'Salary', group: 'income' },
+  { code: '5411', name: 'Groceries', group: 'essential' },
+  { code: '6513', name: 'Rent', group: 'essential' },
+  { code: '6540', name: 'Savings', group: 'savings' },
+  { code: '6012', name: 'Fees', group: 'fees' },
+  { code: '7995', name: 'Gambling', group: 'high_risk' },
+];
+let categories: { code: string; name: string; group: string }[] = [...BASELINE_CATEGORIES];
+
 /** Adapts the in-process fake to the client shape the app depends on. */
 const banking = {
   getDataRange: () => Promise.resolve({ from: '2025-09-01', to: '2026-06-30' }),
@@ -62,15 +77,7 @@ const banking = {
       cursor = page.next_cursor ?? undefined;
     } while (cursor);
   },
-  listMerchantCategories: () =>
-    Promise.resolve([
-      { code: '9001', name: 'Salary', group: 'income' },
-      { code: '5411', name: 'Groceries', group: 'essential' },
-      { code: '6513', name: 'Rent', group: 'essential' },
-      { code: '6540', name: 'Savings', group: 'savings' },
-      { code: '6012', name: 'Fees', group: 'fees' },
-      { code: '7995', name: 'Gambling', group: 'high_risk' },
-    ]),
+  listMerchantCategories: () => Promise.resolve(categories),
 } as unknown as BankingApiClient;
 
 const env = {
@@ -235,5 +242,154 @@ describe('e2e: auditability', () => {
       [USER],
     );
     expect(rows[0]?.c).toBe('1');
+  });
+});
+
+/**
+ * A score has two inputs that version independently: the transactions, and the
+ * dictionary that says what a merchant category MEANS. These hold the first one
+ * still and move the second.
+ *
+ * The dictionary is not a lookup table applied after the fact — it decides which
+ * transactions count as essential spend, savings, fees or high risk, so the same
+ * rows under a different dictionary are a different score. That is why a snapshot
+ * stores `category_version` beside `model_version`, and why a version is minted
+ * rather than overwritten.
+ */
+describe('e2e: the category dictionary is a scoring input, not a lookup', () => {
+  interface Scored {
+    reliability_index: number;
+    metrics: {
+      income_regularity: number;
+      income_coverage_ratio: number;
+      essential_payments_consistency: number;
+    };
+  }
+
+  /** The version scoring pins to: whatever the last sync recorded, not the newest. */
+  const pinnedVersion = async () =>
+    (
+      await pool.query<{ v: number }>(
+        `SELECT category_version AS v FROM sync_runs
+          WHERE user_id = $1 AND category_version IS NOT NULL
+          ORDER BY started_at DESC LIMIT 1`,
+        [USER],
+      )
+    ).rows[0]?.v ?? null;
+
+  // Other tests in this file assume the baseline dictionary.
+  afterEach(() => {
+    categories = [...BASELINE_CATEGORIES];
+  });
+
+  it('regrouping a category moves the score, though not one transaction changed', async () => {
+    // 1. First sync: stores the transactions, and fetches the dictionary as V1.
+    expect((await sync()).json<{ status: string }>().status).toBe('succeeded');
+    const v1 = await pinnedVersion();
+    expect(v1).not.toBeNull();
+    const before = (await score()).json<Scored>();
+
+    // 2. Upstream reclassifies 5411. Every debit the fixture emits carries that
+    //    code, and not a single transaction is touched.
+    categories = BASELINE_CATEGORIES.map((c) =>
+      c.code === '5411' ? { ...c, group: 'high_risk' } : c,
+    );
+
+    const resync = (await sync()).json<{
+      new_transactions: number;
+      duplicate_transactions: number;
+      amended_transactions: number;
+    }>();
+    // The proof that the transaction side stood still: everything was re-read
+    // and everything hashed the same.
+    expect(resync.new_transactions).toBe(0);
+    expect(resync.amended_transactions).toBe(0);
+    expect(resync.duplicate_transactions).toBeGreaterThan(0);
+
+    // A differing dictionary mints V2; V1 is kept, so old snapshots stay readable.
+    expect(await pinnedVersion()).toBe((v1 ?? 0) + 1);
+
+    // 3. Same rows, different meaning — so a different score.
+    const after = (await score()).json<Scored>();
+    expect(after.reliability_index).not.toBe(before.reliability_index);
+    expect(after.reliability_index).toBeLessThan(before.reliability_index);
+
+    // WHY, component by component — the score moves for reasons, not by luck:
+    // C) essential category-months: 5411 is no longer essential, so there are none.
+    expect(before.metrics.essential_payments_consistency).toBeGreaterThan(0);
+    expect(after.metrics.essential_payments_consistency).toBe(0);
+    // B) income coverage: with no essential spend the ratio is undefined, and the
+    //    model pins that to break-even rather than letting a data gap read as
+    //    perfect coverage.
+    expect(after.metrics.income_coverage_ratio).toBeLessThan(before.metrics.income_coverage_ratio);
+    // A) income regularity is unmoved: income is decided by `is_credit`, which no
+    //    dictionary edit can reach. A control on the other two.
+    expect(after.metrics.income_regularity).toBe(before.metrics.income_regularity);
+  });
+
+  /**
+   * The other half of the question: a new version does NOT imply a new score.
+   * Versions are minted on the content hash, which covers the display name;
+   * scoring reads only code and group.
+   */
+  it('a relabelled dictionary mints a version but cannot move the score', async () => {
+    await sync();
+    const v1 = await pinnedVersion();
+    const before = (await score()).json<Scored>();
+
+    // Same codes, same groups. Only the human-readable label differs.
+    categories = BASELINE_CATEGORIES.map((c) =>
+      c.code === '5411' ? { ...c, name: 'Supermarkets & Grocery' } : c,
+    );
+    await sync();
+
+    expect(await pinnedVersion()).toBe((v1 ?? 0) + 1);
+    expect((await score()).json<Scored>().reliability_index).toBe(before.reliability_index);
+  });
+
+  /**
+   * A GAP, pinned here rather than asserted as correct.
+   *
+   * `score_snapshots_reproducibility_idx` is on
+   * `(user_id, window_end, model_version, input_hash)`, and `input_hash` covers
+   * the transactions and closing balances — not `category_version`. So when the
+   * dictionary alone moves the score, the second snapshot collides with the
+   * first and `onConflictDoNothing` discards it: a score was served that the
+   * audit table has no record of, and the row it does hold reports the older
+   * number.
+   *
+   * This asserts what the code does today so the behaviour cannot change
+   * unnoticed. Adding `category_version` to that index would make both scores
+   * storable — a schema change, so it is deliberately not made here.
+   */
+  it('DOCUMENTS A GAP: the dictionary-driven score is served but never recorded', async () => {
+    await sync();
+    const before = (await score()).json<Scored>();
+
+    categories = BASELINE_CATEGORIES.map((c) =>
+      c.code === '5411' ? { ...c, group: 'high_risk' } : c,
+    );
+    await sync();
+    const after = (await score()).json<Scored>();
+    expect(after.reliability_index).not.toBe(before.reliability_index);
+
+    const { rows } = await pool.query<{ reliability_index: number; category_version: number }>(
+      `SELECT reliability_index, category_version FROM score_snapshots
+        WHERE user_id = $1 ORDER BY computed_at`,
+      [USER],
+    );
+    // Two distinct scores were served; one snapshot exists.
+    expect(rows).toHaveLength(1);
+    // And it is the FIRST one — the served score is not the recorded score.
+    expect(rows[0]?.reliability_index).toBe(before.reliability_index);
+    expect(rows[0]?.reliability_index).not.toBe(after.reliability_index);
+  });
+
+  /** And an unchanged dictionary mints nothing, so versions track meaning, not syncs. */
+  it('an identical dictionary does not mint a version at all', async () => {
+    await sync();
+    const v1 = await pinnedVersion();
+    await sync();
+    expect(await pinnedVersion()).toBe(v1);
   });
 });
